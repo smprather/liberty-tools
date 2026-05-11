@@ -10,8 +10,12 @@ The current implementation focuses on standard-cell timing data:
 - streaming parse from `.lib` and `.lib.gz` paths
 - low-memory Rust-backed indexing
 - cell, pin, and timing arc lookup
+- bus, bundle, and Liberty `type(...)` bus definition lookup
 - timing table extraction to Python rows or Polars
 - Boolean-aware `when` filtering
+
+For LLM/agent-oriented API usage, see [docs/AI_API.md](docs/AI_API.md).
+The package also ships `py.typed` and `.pyi` stubs for coding tools.
 
 ## Project Status
 
@@ -180,6 +184,27 @@ cell.name
 cell.area
 cell.pins()
 cell.pin(name)
+cell.buses()
+cell.bus(name)
+cell.bundles()
+cell.bundle(name)
+
+bus.name
+bus.direction
+bus.function
+bus.bus_type
+bus.pins()
+bus.pin(name)
+
+bundle.name
+bundle.direction
+bundle.function
+bundle.members
+bundle.pins()
+bundle.pin(name)
+
+doc.bus_types()
+doc.bus_type(name)
 
 pin.name
 pin.direction

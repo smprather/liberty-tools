@@ -103,3 +103,72 @@ library (when_test) {
 
     assert frame["when"].to_list() == ["A & B", "A & B"]
     assert frame["value"].to_list() == [3.0, 4.0]
+
+
+def test_bus_bundle_and_bus_type_api(tmp_path):
+    liberty = tmp_path / "ram.lib"
+    liberty.write_text(
+        """
+library (ram_lib) {
+  type (addr_bus_t) {
+    base_type : array;
+    data_type : bit;
+    bit_width : 4;
+    bit_from : 3;
+    bit_to : 0;
+    downto : true;
+  }
+  cell (sram32x8) {
+    bus (A) {
+      bus_type : addr_bus_t;
+      direction : input;
+      pin (A[0]) {
+        direction : input;
+      }
+      pin (A[1]) {
+        direction : input;
+      }
+    }
+    bundle (control) {
+      members ("CS WE OE");
+      direction : input;
+      pin (CS) {
+        direction : input;
+      }
+      pin (WE) {
+        direction : input;
+      }
+    }
+    pin (Q) {
+      direction : output;
+      timing () {
+        related_pin : "A[0]";
+        when : "CS & !WE";
+        cell_rise (delay_template) {
+          index_1 ("1,2");
+          values ("3,4");
+        }
+      }
+    }
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    doc = lt.parse_file(liberty)
+    assert doc.bus_types() == ["addr_bus_t"]
+    assert doc.bus_type("addr_bus_t").get("bit_width") == "4"
+
+    cell = doc.cell("sram32x8")
+    assert cell.buses() == ["A"]
+    assert cell.bus("A").bus_type == "addr_bus_t"
+    assert cell.bus("A").pins() == ["A[0]", "A[1]"]
+    assert cell.bus("A").pin("A[0]").direction == "input"
+
+    assert cell.bundles() == ["control"]
+    assert cell.bundle("control").members == ["CS", "WE", "OE"]
+    assert cell.bundle("control").pins() == ["CS", "WE"]
+
+    frame = doc.to_polars(cell="sram32x8", pin="Q", related_pin="A[0]", when="CS")
+    assert frame["value"].to_list() == [3.0, 4.0]

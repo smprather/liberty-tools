@@ -20,6 +20,12 @@ class LibertyDocument:
     def cell(self, name: str) -> Cell:
         return Cell(self._native.cell(name))
 
+    def bus_types(self) -> list[str]:
+        return self._native.bus_types()
+
+    def bus_type(self, name: str) -> BusType:
+        return BusType(self._native.bus_type(name))
+
     def timing_tables(self, **filters: Any) -> list[dict[str, Any]]:
         return self._native.timing_tables(**filters)
 
@@ -48,6 +54,18 @@ class Cell:
 
     def pin(self, name: str) -> Pin:
         return Pin(self._native.pin(name))
+
+    def buses(self) -> list[str]:
+        return self._native.buses()
+
+    def bus(self, name: str) -> Bus:
+        return Bus(self._native.bus(name))
+
+    def bundles(self) -> list[str]:
+        return self._native.bundles()
+
+    def bundle(self, name: str) -> Bundle:
+        return Bundle(self._native.bundle(name))
 
 
 class Pin:
@@ -81,6 +99,107 @@ class Pin:
                 when=when,
             )
         ]
+
+
+class Bus:
+    def __init__(self, native: _native.Bus):
+        self._native = native
+
+    @property
+    def name(self) -> str:
+        return self._native.name
+
+    @property
+    def direction(self) -> str | None:
+        return self._native.direction
+
+    @property
+    def function(self) -> str | None:
+        return self._native.function
+
+    @property
+    def bus_type(self) -> str | None:
+        return self._native.bus_type
+
+    def pins(self) -> list[str]:
+        return self._native.pins()
+
+    def pin(self, name: str) -> Pin:
+        return Pin(self._native.pin(name))
+
+    def timing_arcs(
+        self,
+        *,
+        related_pin: str | None = None,
+        timing_type: str | None = None,
+        when: str | None = None,
+    ) -> list[TimingArc]:
+        return [
+            TimingArc(arc)
+            for arc in self._native.timing_arcs(
+                related_pin=related_pin,
+                timing_type=timing_type,
+                when=when,
+            )
+        ]
+
+
+class Bundle:
+    def __init__(self, native: _native.Bundle):
+        self._native = native
+
+    @property
+    def name(self) -> str:
+        return self._native.name
+
+    @property
+    def direction(self) -> str | None:
+        return self._native.direction
+
+    @property
+    def function(self) -> str | None:
+        return self._native.function
+
+    @property
+    def members(self) -> list[str]:
+        return self._native.members
+
+    def pins(self) -> list[str]:
+        return self._native.pins()
+
+    def pin(self, name: str) -> Pin:
+        return Pin(self._native.pin(name))
+
+    def timing_arcs(
+        self,
+        *,
+        related_pin: str | None = None,
+        timing_type: str | None = None,
+        when: str | None = None,
+    ) -> list[TimingArc]:
+        return [
+            TimingArc(arc)
+            for arc in self._native.timing_arcs(
+                related_pin=related_pin,
+                timing_type=timing_type,
+                when=when,
+            )
+        ]
+
+
+class BusType:
+    def __init__(self, native: _native.BusType):
+        self._native = native
+
+    @property
+    def name(self) -> str:
+        return self._native.name
+
+    def attributes(self) -> dict[str, str]:
+        return self._native.attributes()
+
+    def get(self, key: str) -> str | None:
+        return self._native.get(key)
 
 
 class TimingArc:
@@ -138,6 +257,9 @@ def parse_file(path: str | Path, **filters: Any) -> LibertyDocument:
 
 __all__ = [
     "Cell",
+    "Bus",
+    "Bundle",
+    "BusType",
     "LibertyDocument",
     "Pin",
     "TimingArc",

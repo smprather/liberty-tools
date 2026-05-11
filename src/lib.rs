@@ -12,6 +12,7 @@ struct Document {
     #[pyo3(get)]
     library_name: String,
     cells: Vec<CellData>,
+    bus_types: Vec<BusTypeData>,
 }
 
 #[pyclass]
@@ -22,6 +23,8 @@ struct Cell {
     #[pyo3(get)]
     area: Option<f64>,
     pins: Vec<PinData>,
+    buses: Vec<BusData>,
+    bundles: Vec<BundleData>,
 }
 
 #[pyclass]
@@ -34,6 +37,44 @@ struct Pin {
     #[pyo3(get)]
     function: Option<String>,
     timing_arcs: Vec<TimingArcData>,
+}
+
+#[pyclass]
+#[derive(Clone)]
+struct Bus {
+    #[pyo3(get)]
+    name: String,
+    #[pyo3(get)]
+    direction: Option<String>,
+    #[pyo3(get)]
+    function: Option<String>,
+    #[pyo3(get)]
+    bus_type: Option<String>,
+    pins: Vec<PinData>,
+    timing_arcs: Vec<TimingArcData>,
+}
+
+#[pyclass]
+#[derive(Clone)]
+struct Bundle {
+    #[pyo3(get)]
+    name: String,
+    #[pyo3(get)]
+    direction: Option<String>,
+    #[pyo3(get)]
+    function: Option<String>,
+    #[pyo3(get)]
+    members: Vec<String>,
+    pins: Vec<PinData>,
+    timing_arcs: Vec<TimingArcData>,
+}
+
+#[pyclass]
+#[derive(Clone)]
+struct BusType {
+    #[pyo3(get)]
+    name: String,
+    attributes: Vec<(String, String)>,
 }
 
 #[pyclass]
@@ -66,6 +107,8 @@ struct CellData {
     name: String,
     area: Option<f64>,
     pins: Vec<PinData>,
+    buses: Vec<BusData>,
+    bundles: Vec<BundleData>,
 }
 
 #[derive(Clone)]
@@ -74,6 +117,32 @@ struct PinData {
     direction: Option<String>,
     function: Option<String>,
     timing_arcs: Vec<TimingArcData>,
+}
+
+#[derive(Clone)]
+struct BusData {
+    name: String,
+    direction: Option<String>,
+    function: Option<String>,
+    bus_type: Option<String>,
+    pins: Vec<PinData>,
+    timing_arcs: Vec<TimingArcData>,
+}
+
+#[derive(Clone)]
+struct BundleData {
+    name: String,
+    direction: Option<String>,
+    function: Option<String>,
+    members: Vec<String>,
+    pins: Vec<PinData>,
+    timing_arcs: Vec<TimingArcData>,
+}
+
+#[derive(Clone)]
+struct BusTypeData {
+    name: String,
+    attributes: Vec<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -98,6 +167,8 @@ impl From<CellData> for Cell {
             name: value.name,
             area: value.area,
             pins: value.pins,
+            buses: value.buses,
+            bundles: value.bundles,
         }
     }
 }
@@ -109,6 +180,41 @@ impl From<PinData> for Pin {
             direction: value.direction,
             function: value.function,
             timing_arcs: value.timing_arcs,
+        }
+    }
+}
+
+impl From<BusData> for Bus {
+    fn from(value: BusData) -> Self {
+        Self {
+            name: value.name,
+            direction: value.direction,
+            function: value.function,
+            bus_type: value.bus_type,
+            pins: value.pins,
+            timing_arcs: value.timing_arcs,
+        }
+    }
+}
+
+impl From<BundleData> for Bundle {
+    fn from(value: BundleData) -> Self {
+        Self {
+            name: value.name,
+            direction: value.direction,
+            function: value.function,
+            members: value.members,
+            pins: value.pins,
+            timing_arcs: value.timing_arcs,
+        }
+    }
+}
+
+impl From<BusTypeData> for BusType {
+    fn from(value: BusTypeData) -> Self {
+        Self {
+            name: value.name,
+            attributes: value.attributes,
         }
     }
 }
@@ -139,6 +245,22 @@ impl From<TimingTableData> for TimingTable {
 impl Document {
     fn cells(&self) -> Vec<String> {
         self.cells.iter().map(|cell| cell.name.clone()).collect()
+    }
+
+    fn bus_types(&self) -> Vec<String> {
+        self.bus_types
+            .iter()
+            .map(|bus_type| bus_type.name.clone())
+            .collect()
+    }
+
+    fn bus_type(&self, name: &str) -> PyResult<BusType> {
+        self.bus_types
+            .iter()
+            .find(|bus_type| bus_type.name == name)
+            .cloned()
+            .map(BusType::from)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown bus type {name:?}")))
     }
 
     fn cell(&self, name: &str) -> PyResult<Cell> {
@@ -193,6 +315,68 @@ impl Document {
                     }
                 }
             }
+            for bus_data in &cell_data.buses {
+                if matches_opt(pin, &bus_data.name) {
+                    append_matching_arc_tables(
+                        py,
+                        &rows,
+                        &cell_data.name,
+                        &bus_data.name,
+                        &bus_data.timing_arcs,
+                        related_pin,
+                        timing_type,
+                        &when_filter,
+                        table,
+                    )?;
+                }
+                for pin_data in &bus_data.pins {
+                    if !matches_opt(pin, &pin_data.name) {
+                        continue;
+                    }
+                    append_matching_arc_tables(
+                        py,
+                        &rows,
+                        &cell_data.name,
+                        &pin_data.name,
+                        &pin_data.timing_arcs,
+                        related_pin,
+                        timing_type,
+                        &when_filter,
+                        table,
+                    )?;
+                }
+            }
+            for bundle_data in &cell_data.bundles {
+                if matches_opt(pin, &bundle_data.name) {
+                    append_matching_arc_tables(
+                        py,
+                        &rows,
+                        &cell_data.name,
+                        &bundle_data.name,
+                        &bundle_data.timing_arcs,
+                        related_pin,
+                        timing_type,
+                        &when_filter,
+                        table,
+                    )?;
+                }
+                for pin_data in &bundle_data.pins {
+                    if !matches_opt(pin, &pin_data.name) {
+                        continue;
+                    }
+                    append_matching_arc_tables(
+                        py,
+                        &rows,
+                        &cell_data.name,
+                        &pin_data.name,
+                        &pin_data.timing_arcs,
+                        related_pin,
+                        timing_type,
+                        &when_filter,
+                        table,
+                    )?;
+                }
+            }
         }
         Ok(rows)
     }
@@ -212,6 +396,35 @@ impl Cell {
             .map(Pin::from)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown pin {name:?}")))
     }
+
+    fn buses(&self) -> Vec<String> {
+        self.buses.iter().map(|bus| bus.name.clone()).collect()
+    }
+
+    fn bus(&self, name: &str) -> PyResult<Bus> {
+        self.buses
+            .iter()
+            .find(|bus| bus.name == name)
+            .cloned()
+            .map(Bus::from)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown bus {name:?}")))
+    }
+
+    fn bundles(&self) -> Vec<String> {
+        self.bundles
+            .iter()
+            .map(|bundle| bundle.name.clone())
+            .collect()
+    }
+
+    fn bundle(&self, name: &str) -> PyResult<Bundle> {
+        self.bundles
+            .iter()
+            .find(|bundle| bundle.name == name)
+            .cloned()
+            .map(Bundle::from)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown bundle {name:?}")))
+    }
 }
 
 #[pymethods]
@@ -223,18 +436,77 @@ impl Pin {
         timing_type: Option<&str>,
         when: Option<&str>,
     ) -> PyResult<Vec<TimingArc>> {
-        let when_filter = WhenFilter::new(when)?;
-        Ok(self
-            .timing_arcs
+        filter_timing_arcs(&self.timing_arcs, related_pin, timing_type, when)
+    }
+}
+
+#[pymethods]
+impl Bus {
+    fn pins(&self) -> Vec<String> {
+        self.pins.iter().map(|pin| pin.name.clone()).collect()
+    }
+
+    fn pin(&self, name: &str) -> PyResult<Pin> {
+        self.pins
             .iter()
-            .filter(|arc| {
-                matches_opt_opt(related_pin, arc.related_pin.as_deref())
-                    && matches_opt_opt(timing_type, arc.timing_type.as_deref())
-                    && when_filter.matches(arc.when.as_deref())
-            })
+            .find(|pin| pin.name == name)
             .cloned()
-            .map(TimingArc::from)
-            .collect())
+            .map(Pin::from)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown bus pin {name:?}")))
+    }
+
+    #[pyo3(signature = (related_pin=None, timing_type=None, when=None))]
+    fn timing_arcs(
+        &self,
+        related_pin: Option<&str>,
+        timing_type: Option<&str>,
+        when: Option<&str>,
+    ) -> PyResult<Vec<TimingArc>> {
+        filter_timing_arcs(&self.timing_arcs, related_pin, timing_type, when)
+    }
+}
+
+#[pymethods]
+impl Bundle {
+    fn pins(&self) -> Vec<String> {
+        self.pins.iter().map(|pin| pin.name.clone()).collect()
+    }
+
+    fn pin(&self, name: &str) -> PyResult<Pin> {
+        self.pins
+            .iter()
+            .find(|pin| pin.name == name)
+            .cloned()
+            .map(Pin::from)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown bundle pin {name:?}")))
+    }
+
+    #[pyo3(signature = (related_pin=None, timing_type=None, when=None))]
+    fn timing_arcs(
+        &self,
+        related_pin: Option<&str>,
+        timing_type: Option<&str>,
+        when: Option<&str>,
+    ) -> PyResult<Vec<TimingArc>> {
+        filter_timing_arcs(&self.timing_arcs, related_pin, timing_type, when)
+    }
+}
+
+#[pymethods]
+impl BusType {
+    fn attributes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let attrs = PyDict::new(py);
+        for (key, value) in &self.attributes {
+            attrs.set_item(key, value)?;
+        }
+        Ok(attrs)
+    }
+
+    fn get(&self, key: &str) -> Option<String> {
+        self.attributes
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.clone())
     }
 }
 
@@ -294,6 +566,9 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Document>()?;
     m.add_class::<Cell>()?;
     m.add_class::<Pin>()?;
+    m.add_class::<Bus>()?;
+    m.add_class::<Bundle>()?;
+    m.add_class::<BusType>()?;
     m.add_class::<TimingArc>()?;
     m.add_class::<TimingTable>()?;
     m.add_function(wrap_pyfunction!(parse_file, m)?)?;
@@ -329,6 +604,33 @@ fn append_table_rows<'py>(
     Ok(())
 }
 
+fn append_matching_arc_tables<'py>(
+    py: Python<'py>,
+    rows: &Bound<'py, PyList>,
+    cell: &str,
+    pin: &str,
+    arcs: &[TimingArcData],
+    related_pin: Option<&str>,
+    timing_type: Option<&str>,
+    when_filter: &WhenFilter,
+    table: Option<&str>,
+) -> PyResult<()> {
+    for arc in arcs {
+        if !matches_opt_opt(related_pin, arc.related_pin.as_deref())
+            || !matches_opt_opt(timing_type, arc.timing_type.as_deref())
+            || !when_filter.matches(arc.when.as_deref())
+        {
+            continue;
+        }
+        for timing_table in &arc.tables {
+            if matches_opt(table, &timing_table.name) {
+                append_table_rows(py, rows, cell, pin, arc, timing_table)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn table_cols(table: &TimingTableData) -> usize {
     if !table.index_2.is_empty() {
         table.index_2.len()
@@ -337,6 +639,25 @@ fn table_cols(table: &TimingTableData) -> usize {
     } else {
         table.values.len()
     }
+}
+
+fn filter_timing_arcs(
+    arcs: &[TimingArcData],
+    related_pin: Option<&str>,
+    timing_type: Option<&str>,
+    when: Option<&str>,
+) -> PyResult<Vec<TimingArc>> {
+    let when_filter = WhenFilter::new(when)?;
+    Ok(arcs
+        .iter()
+        .filter(|arc| {
+            matches_opt_opt(related_pin, arc.related_pin.as_deref())
+                && matches_opt_opt(timing_type, arc.timing_type.as_deref())
+                && when_filter.matches(arc.when.as_deref())
+        })
+        .cloned()
+        .map(TimingArc::from)
+        .collect())
 }
 
 fn matches_opt(filter: Option<&str>, actual: &str) -> bool {
@@ -838,6 +1159,7 @@ impl Parser {
     fn parse_document(&mut self) -> Result<Document, ParseError> {
         let mut library_name = String::new();
         let mut cells = Vec::new();
+        let mut bus_types = Vec::new();
 
         while self.current.is_some() {
             let name = self.take_word()?;
@@ -849,7 +1171,7 @@ impl Parser {
             self.expect_symbol(b'{')?;
             if name == "library" {
                 library_name = args.first().cloned().unwrap_or_default();
-                self.parse_library_body(&mut cells)?;
+                self.parse_library_body(&mut cells, &mut bus_types)?;
             } else {
                 self.skip_group_body()?;
             }
@@ -863,28 +1185,43 @@ impl Parser {
         Ok(Document {
             library_name,
             cells,
+            bus_types,
         })
     }
 
-    fn parse_library_body(&mut self, cells: &mut Vec<CellData>) -> Result<(), ParseError> {
+    fn parse_library_body(
+        &mut self,
+        cells: &mut Vec<CellData>,
+        bus_types: &mut Vec<BusTypeData>,
+    ) -> Result<(), ParseError> {
         while !self.consume_symbol(b'}')? {
             let name = self.take_word()?;
             if self.consume_symbol(b'(')? {
                 let args = self.read_args(&name)?;
                 if self.consume_symbol(b'{')? {
-                    if name == "cell" {
-                        let cell_name = args.first().cloned().unwrap_or_default();
-                        if self
-                            .cell_filter
-                            .as_ref()
-                            .map_or(true, |filter| filter.contains(&cell_name))
-                        {
-                            cells.push(self.parse_cell_body(cell_name)?);
-                        } else {
+                    match name.as_str() {
+                        "cell" => {
+                            let cell_name = args.first().cloned().unwrap_or_default();
+                            if self
+                                .cell_filter
+                                .as_ref()
+                                .map_or(true, |filter| filter.contains(&cell_name))
+                            {
+                                cells.push(self.parse_cell_body(cell_name)?);
+                            } else {
+                                self.skip_group_body()?;
+                            }
+                        }
+                        "type" => {
+                            bus_types.push(
+                                self.parse_bus_type_body(
+                                    args.first().cloned().unwrap_or_default(),
+                                )?,
+                            );
+                        }
+                        _ => {
                             self.skip_group_body()?;
                         }
-                    } else {
-                        self.skip_group_body()?;
                     }
                     self.consume_symbol(b';')?;
                 } else {
@@ -902,15 +1239,32 @@ impl Parser {
     fn parse_cell_body(&mut self, name: String) -> Result<CellData, ParseError> {
         let mut area = None;
         let mut pins = Vec::new();
+        let mut buses = Vec::new();
+        let mut bundles = Vec::new();
         while !self.consume_symbol(b'}')? {
             let item_name = self.take_word()?;
             if self.consume_symbol(b'(')? {
                 let args = self.read_args(&item_name)?;
                 if self.consume_symbol(b'{')? {
-                    if item_name == "pin" {
-                        pins.push(self.parse_pin_body(args.first().cloned().unwrap_or_default())?);
-                    } else {
-                        self.skip_group_body()?;
+                    match item_name.as_str() {
+                        "pin" => {
+                            pins.push(
+                                self.parse_pin_body(args.first().cloned().unwrap_or_default())?,
+                            );
+                        }
+                        "bus" => {
+                            buses.push(
+                                self.parse_bus_body(args.first().cloned().unwrap_or_default())?,
+                            );
+                        }
+                        "bundle" => {
+                            bundles.push(
+                                self.parse_bundle_body(args.first().cloned().unwrap_or_default())?,
+                            );
+                        }
+                        _ => {
+                            self.skip_group_body()?;
+                        }
                     }
                     self.consume_symbol(b';')?;
                 } else {
@@ -925,7 +1279,13 @@ impl Parser {
                 return Err(self.error_here("expected '(' or ':' after cell item name"));
             }
         }
-        Ok(CellData { name, area, pins })
+        Ok(CellData {
+            name,
+            area,
+            pins,
+            buses,
+            bundles,
+        })
     }
 
     fn parse_pin_body(&mut self, name: String) -> Result<PinData, ParseError> {
@@ -963,6 +1323,136 @@ impl Parser {
             function,
             timing_arcs,
         })
+    }
+
+    fn parse_bus_body(&mut self, name: String) -> Result<BusData, ParseError> {
+        let mut direction = None;
+        let mut function = None;
+        let mut bus_type = None;
+        let mut pins = Vec::new();
+        let mut timing_arcs = Vec::new();
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b'(')? {
+                let args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    match item_name.as_str() {
+                        "pin" => {
+                            pins.push(
+                                self.parse_pin_body(args.first().cloned().unwrap_or_default())?,
+                            );
+                        }
+                        "timing" => {
+                            timing_arcs.push(self.parse_timing_body()?);
+                        }
+                        _ => {
+                            self.skip_group_body()?;
+                        }
+                    }
+                    self.consume_symbol(b';')?;
+                } else {
+                    if item_name == "members" {
+                        pins.extend(members_from_args(&args).into_iter().map(|name| PinData {
+                            name,
+                            direction: direction.clone(),
+                            function: None,
+                            timing_arcs: Vec::new(),
+                        }));
+                    }
+                    self.consume_symbol(b';')?;
+                }
+            } else if self.consume_symbol(b':')? {
+                let value = self.read_simple_attribute_value()?;
+                match item_name.as_str() {
+                    "direction" => direction = Some(value),
+                    "function" => function = Some(value),
+                    "bus_type" => bus_type = Some(value),
+                    _ => {}
+                }
+            } else {
+                return Err(self.error_here("expected '(' or ':' after bus item name"));
+            }
+        }
+        Ok(BusData {
+            name,
+            direction,
+            function,
+            bus_type,
+            pins,
+            timing_arcs,
+        })
+    }
+
+    fn parse_bundle_body(&mut self, name: String) -> Result<BundleData, ParseError> {
+        let mut direction = None;
+        let mut function = None;
+        let mut members = Vec::new();
+        let mut pins = Vec::new();
+        let mut timing_arcs = Vec::new();
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b'(')? {
+                let args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    match item_name.as_str() {
+                        "pin" => {
+                            pins.push(
+                                self.parse_pin_body(args.first().cloned().unwrap_or_default())?,
+                            );
+                        }
+                        "timing" => {
+                            timing_arcs.push(self.parse_timing_body()?);
+                        }
+                        _ => {
+                            self.skip_group_body()?;
+                        }
+                    }
+                    self.consume_symbol(b';')?;
+                } else {
+                    if item_name == "members" {
+                        members = members_from_args(&args);
+                    }
+                    self.consume_symbol(b';')?;
+                }
+            } else if self.consume_symbol(b':')? {
+                let value = self.read_simple_attribute_value()?;
+                match item_name.as_str() {
+                    "direction" => direction = Some(value),
+                    "function" => function = Some(value),
+                    _ => {}
+                }
+            } else {
+                return Err(self.error_here("expected '(' or ':' after bundle item name"));
+            }
+        }
+        Ok(BundleData {
+            name,
+            direction,
+            function,
+            members,
+            pins,
+            timing_arcs,
+        })
+    }
+
+    fn parse_bus_type_body(&mut self, name: String) -> Result<BusTypeData, ParseError> {
+        let mut attributes = Vec::new();
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b':')? {
+                attributes.push((item_name, self.read_simple_attribute_value()?));
+            } else if self.consume_symbol(b'(')? {
+                let _args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    self.skip_group_body()?;
+                } else {
+                    self.consume_symbol(b';')?;
+                }
+            } else {
+                return Err(self.error_here("expected '(' or ':' after type item name"));
+            }
+        }
+        Ok(BusTypeData { name, attributes })
     }
 
     fn parse_timing_body(&mut self) -> Result<TimingArcData, ParseError> {
@@ -1224,6 +1714,15 @@ fn parse_float_args(values: &[String]) -> Vec<f64> {
         .iter()
         .flat_map(|items| items.split(','))
         .filter_map(|item| item.trim().parse::<f64>().ok())
+        .collect()
+}
+
+fn members_from_args(args: &[String]) -> Vec<String> {
+    args.iter()
+        .flat_map(|arg| arg.split_whitespace())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToOwned::to_owned)
         .collect()
 }
 
