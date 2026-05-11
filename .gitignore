@@ -203,6 +203,9 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Local Liberty reference data
+generic80_ss_125c_1p116v_0p84v.lib
+
 # Ruff stuff:
 .ruff_cache/
 

@@ -1,0 +1,26 @@
+[project]
+name = "liberty-tools"
+version = "0.1.0"
+description = "Fast Rust-backed parser and query tools for Liberty files"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "polars>=1.40.1",
+]
+
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "liberty_tools._native"
+python-source = "."
+
+[dependency-groups]
+dev = [
+    "liberty-parser>=0.0.29",
+    "maturin>=1.8,<2",
+    "pymupdf4llm>=1.27.2.3",
+    "pytest>=9.0.1",
+]

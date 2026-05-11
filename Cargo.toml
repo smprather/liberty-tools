@@ -1,0 +1,16 @@
+[package]
+name = "liberty_tools_native"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+[dependencies]
+flate2 = "1.1"
+pyo3 = { version = "0.27", features = ["extension-module"] }
