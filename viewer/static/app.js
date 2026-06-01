@@ -247,8 +247,13 @@ async function loadTable(cell, ref) {
   });
   document.getElementById("crumb").textContent =
     `${cell} · ${ref.container ? ref.container + " · " : ""}${ref.pin} · ${ref.group} · ${ref.table}`;
-  const data = await api(`/api/table?${params}`);
-  renderTable(data, ref);
+  try {
+    const data = await api(`/api/table?${params}`);
+    renderTable(data, ref);
+  } catch (e) {
+    document.getElementById("view").innerHTML =
+      `<div class="muted">table error: ${e.message}</div>`;
+  }
 }
 
 function renderTable(data, ref) {
@@ -302,6 +307,26 @@ function renderCcsGrid(view, data) {
   view.appendChild(tbl);
 }
 
+// CCS/CCSP waves carry a long settling tail (current ~0 out to ~1 ns); without
+// clamping, the x-autoscale squishes the real edge into a sliver that reads as
+// "nothing". Return the time at which the signal has decayed to <1% of peak.
+function activeXMax(time, current) {
+  const full = time.length ? time[time.length - 1] : 1;
+  let peak = 0;
+  for (const v of current) {
+    const a = Math.abs(v);
+    if (a > peak) peak = a;
+  }
+  if (peak <= 0) return full;
+  const thr = peak * 0.01;
+  let last = 0;
+  for (let k = 0; k < current.length; k++) {
+    if (Math.abs(current[k]) > thr) last = k;
+  }
+  const x = (time[last] || full) * 1.15;
+  return x > 0 ? Math.min(x, full) : full;
+}
+
 function showCcsWave(table, slew, cap, cell, L) {
   L = L || { time: "time", current: "current" };
   document.getElementById("wave-section").classList.remove("hidden");
@@ -314,7 +339,8 @@ function showCcsWave(table, slew, cap, cell, L) {
   }
   Plotly.newPlot("wave", traces, {
     ...PLOT_LAYOUT,
-    xaxis: { title: L.time },
+    // Default view to the active region; double-click autoscales to the full tail.
+    xaxis: { title: L.time, range: [0, activeXMax(cell.time, cell.current)] },
     yaxis: { title: L.current },
     shapes,
   }, { responsive: true });
