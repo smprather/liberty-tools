@@ -2,7 +2,7 @@ use flate2::read::GzDecoder;
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 
@@ -958,6 +958,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DynamicCurrent>()?;
     m.add_class::<SwitchingGroup>()?;
     m.add_class::<PgCurrent>()?;
+    m.add_class::<LibraryIndex>()?;
     m.add_function(wrap_pyfunction!(parse_file, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize_str, m)?)?;
@@ -1344,6 +1345,347 @@ fn open_input(path: &str) -> io::Result<Box<dyn Read>> {
         Ok(Box::new(GzDecoder::new(reader)))
     } else {
         Ok(Box::new(reader))
+    }
+}
+
+// ---- byte-offset cell indexing (lazy-parse backend) ------------------------
+//
+// Scan the whole (decompressed) file once, recording the byte range of every
+// top-level `cell (...) {...}` group, so the viewer can list cells and parse one
+// at a time instead of parsing the entire file up front. The scanner is lexer-
+// faithful about strings/comments but does *not* build any AST.
+
+fn read_to_memory(path: &str) -> io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    open_input(path)?.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+fn is_index_symbol(b: u8) -> bool {
+    matches!(b, b'(' | b')' | b'{' | b'}' | b':' | b';' | b',')
+}
+
+/// Skip whitespace, `#`/`//`/`* */` comments, and `\`+newline continuations.
+fn skip_trivia(d: &[u8], mut i: usize) -> usize {
+    let n = d.len();
+    loop {
+        while i < n && d[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i + 1 < n && d[i] == b'\\' && (d[i + 1] == b'\n' || d[i + 1] == b'\r') {
+            i += 2;
+        } else if i < n && d[i] == b'#' {
+            while i < n && d[i] != b'\n' {
+                i += 1;
+            }
+        } else if i + 1 < n && d[i] == b'/' && d[i + 1] == b'/' {
+            while i < n && d[i] != b'\n' {
+                i += 1;
+            }
+        } else if i + 1 < n && d[i] == b'/' && d[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < n && !(d[i] == b'*' && d[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(n);
+        } else {
+            break;
+        }
+    }
+    i
+}
+
+/// Consume a quoted string starting at `d[i] == quote`; return index after the
+/// closing quote, honoring backslash escapes.
+fn skip_quoted(d: &[u8], mut i: usize) -> usize {
+    let n = d.len();
+    let quote = d[i];
+    i += 1;
+    while i < n {
+        if d[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if d[i] == quote {
+            return i + 1;
+        }
+        i += 1;
+    }
+    i
+}
+
+/// Read one token (bare word or quoted string) at `i`; return (value, next).
+fn read_token(d: &[u8], i: usize) -> (String, usize) {
+    let n = d.len();
+    if i < n && (d[i] == b'"' || d[i] == b'\'') {
+        let end = skip_quoted(d, i);
+        let inner = &d[i + 1..end.saturating_sub(1).max(i + 1)];
+        return (String::from_utf8_lossy(inner).into_owned(), end);
+    }
+    let start = i;
+    let mut j = i;
+    while j < n && !d[j].is_ascii_whitespace() && !is_index_symbol(d[j]) {
+        j += 1;
+    }
+    (String::from_utf8_lossy(&d[start..j]).into_owned(), j)
+}
+
+/// At `d[i] == '('`, read the comma-separated args (quotes stripped); return
+/// (args, index after the matching ')').
+fn read_paren_args(d: &[u8], mut i: usize) -> (Vec<String>, usize) {
+    let n = d.len();
+    i += 1; // past '('
+    let mut args = Vec::new();
+    let mut cur = String::new();
+    while i < n {
+        i = skip_trivia(d, i);
+        if i >= n {
+            break;
+        }
+        match d[i] {
+            b')' => {
+                i += 1;
+                break;
+            }
+            b',' => {
+                args.push(cur.trim().to_string());
+                cur.clear();
+                i += 1;
+            }
+            b'"' | b'\'' => {
+                let end = skip_quoted(d, i);
+                cur.push_str(&String::from_utf8_lossy(
+                    &d[i + 1..end.saturating_sub(1).max(i + 1)],
+                ));
+                i = end;
+            }
+            _ => {
+                cur.push(d[i] as char);
+                i += 1;
+            }
+        }
+    }
+    if !cur.trim().is_empty() || !args.is_empty() {
+        args.push(cur.trim().to_string());
+    }
+    (args, i)
+}
+
+/// At `d[i] == '{'`, return the index just past the matching `}` (string/comment
+/// aware).
+fn match_braces(d: &[u8], mut i: usize) -> usize {
+    let n = d.len();
+    let mut depth = 0usize;
+    while i < n {
+        match d[i] {
+            b'"' | b'\'' => i = skip_quoted(d, i),
+            b'#' => {
+                while i < n && d[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < n && d[i + 1] == b'/' => {
+                while i < n && d[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < n && d[i + 1] == b'*' => {
+                i += 2;
+                while i + 1 < n && !(d[i] == b'*' && d[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(n);
+            }
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    i
+}
+
+fn skip_to_semicolon(d: &[u8], mut i: usize) -> usize {
+    let n = d.len();
+    while i < n {
+        match d[i] {
+            b'"' | b'\'' => i = skip_quoted(d, i),
+            b';' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    i
+}
+
+/// Index every top-level `cell` group. Returns (library_name, preamble_start,
+/// preamble_end, [(cell_name, start, end)]). Lenient: a stray `}` that drops
+/// depth early does not stop cell discovery.
+fn index_cells(d: &[u8]) -> (String, usize, usize, Vec<(String, usize, usize)>) {
+    let n = d.len();
+    let mut i = skip_trivia(d, 0);
+    let (_kw, j) = read_token(d, i);
+    i = skip_trivia(d, j);
+    let mut lib_name = String::new();
+    if i < n && d[i] == b'(' {
+        let (args, k) = read_paren_args(d, i);
+        lib_name = args.into_iter().next().unwrap_or_default();
+        i = skip_trivia(d, k);
+    }
+    if i < n && d[i] == b'{' {
+        i += 1;
+    }
+    let body_start = i;
+    let mut cells = Vec::new();
+    let mut first_cell: Option<usize> = None;
+    while i < n {
+        i = skip_trivia(d, i);
+        if i >= n {
+            break;
+        }
+        if d[i] == b'}' {
+            i += 1; // library close or stray — keep scanning
+            continue;
+        }
+        let tok_start = i;
+        let (name, j) = read_token(d, i);
+        if name.is_empty() {
+            i += 1;
+            continue;
+        }
+        i = skip_trivia(d, j);
+        if i < n && d[i] == b'(' {
+            let (args, k) = read_paren_args(d, i);
+            i = skip_trivia(d, k);
+            if i < n && d[i] == b'{' {
+                let end = match_braces(d, i);
+                if name == "cell" {
+                    if first_cell.is_none() {
+                        first_cell = Some(tok_start);
+                    }
+                    cells.push((args.into_iter().next().unwrap_or_default(), tok_start, end));
+                }
+                i = end;
+                let s = skip_trivia(d, i);
+                if s < n && d[s] == b';' {
+                    i = s + 1;
+                }
+            } else if i < n && d[i] == b';' {
+                i += 1;
+            }
+        } else if i < n && d[i] == b':' {
+            i = skip_to_semicolon(d, i + 1);
+        } else {
+            i += 1;
+        }
+    }
+    let header_end = first_cell.unwrap_or(i);
+    (lib_name, body_start, header_end, cells)
+}
+
+fn parse_slice_as_library(name: &str, body: &[u8]) -> Result<Document, ParseError> {
+    let mut buf = Vec::with_capacity(body.len() + 32);
+    buf.extend_from_slice(format!("library ({name}) {{\n").as_bytes());
+    buf.extend_from_slice(body);
+    buf.extend_from_slice(b"\n}\n");
+    let reader: Box<dyn Read> = Box::new(io::Cursor::new(buf));
+    Parser::new(reader, None)?.parse_document()
+}
+
+/// Cell-offset index over an in-memory Liberty file: list cells cheaply, parse
+/// one cell at a time. Built for multi-GB files where a full parse is too slow.
+#[pyclass]
+struct LibraryIndex {
+    data: Vec<u8>,
+    #[pyo3(get)]
+    library_name: String,
+    order: Vec<String>,
+    ranges: HashMap<String, (usize, usize)>,
+    header: Document,
+}
+
+#[pymethods]
+impl LibraryIndex {
+    #[staticmethod]
+    fn open(path: &str) -> PyResult<LibraryIndex> {
+        let data = read_to_memory(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let (lib_name, preamble_start, preamble_end, cells) = index_cells(&data);
+        let header = parse_slice_as_library(&lib_name, &data[preamble_start..preamble_end])
+            .map_err(ParseError::into_py)?;
+        let mut order = Vec::with_capacity(cells.len());
+        let mut ranges = HashMap::with_capacity(cells.len());
+        for (name, start, end) in cells {
+            if !ranges.contains_key(&name) {
+                order.push(name.clone());
+            }
+            ranges.insert(name, (start, end));
+        }
+        Ok(LibraryIndex {
+            data,
+            library_name: lib_name,
+            order,
+            ranges,
+            header,
+        })
+    }
+
+    fn cell_names(&self) -> Vec<String> {
+        self.order.clone()
+    }
+
+    fn num_cells(&self) -> usize {
+        self.order.len()
+    }
+
+    fn cell(&self, name: &str) -> PyResult<Cell> {
+        let &(start, end) = self
+            .ranges
+            .get(name)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown cell {name:?}")))?;
+        let doc = parse_slice_as_library(&self.library_name, &self.data[start..end])
+            .map_err(ParseError::into_py)?;
+        doc.cells
+            .into_iter()
+            .next()
+            .map(Cell::from)
+            .ok_or_else(|| PyValueError::new_err(format!("failed to parse cell {name:?}")))
+    }
+
+    // -- library header pass-throughs (parsed once at open) --
+    #[getter]
+    fn voltage_unit(&self) -> Option<String> {
+        self.header.voltage_unit.clone()
+    }
+    #[getter]
+    fn current_unit(&self) -> Option<String> {
+        self.header.current_unit.clone()
+    }
+    #[getter]
+    fn time_unit(&self) -> Option<String> {
+        self.header.time_unit.clone()
+    }
+    #[getter]
+    fn capacitive_load_unit(&self) -> Option<String> {
+        self.header.capacitive_load_unit.clone()
+    }
+    fn energy_unit_joules(&self) -> Option<f64> {
+        self.header.energy_unit_joules()
+    }
+    fn templates<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.header.templates(py)
+    }
+    fn attributes(&self) -> Vec<(String, String)> {
+        self.header.attributes()
+    }
+    fn driver_waveforms(&self) -> Vec<TimingTable> {
+        self.header.driver_waveforms()
     }
 }
 

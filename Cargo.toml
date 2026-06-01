@@ -12,5 +12,7 @@ codegen-units = 1
 lto = "thin"
 
 [dependencies]
-flate2 = "1.1"
+# zlib-rs backend: pure-Rust, ~2-3x faster inflate than the default miniz_oxide,
+# no C toolchain. Speeds the gzip decompress that dominates LibraryIndex.open.
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 pyo3 = { version = "0.27", features = ["extension-module"] }

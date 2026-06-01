@@ -435,6 +435,65 @@ class TimingTable:
         return pl.DataFrame(self._native.rows())
 
 
+class LibraryIndex:
+    """Lazy, cell-indexed view of a Liberty file for fast open on large libs.
+
+    Reads the (decompressed) file into memory once and records each cell's byte
+    range; the library header (units/templates/attrs) is parsed up front, but
+    individual cells are parsed only when :meth:`cell` is called. Use this
+    instead of :func:`parse_file` when you need to list/inspect a few cells of a
+    multi-GB library without paying for a full parse.
+    """
+
+    def __init__(self, native: _native.LibraryIndex):
+        self._native = native
+
+    @classmethod
+    def open(cls, path: str | Path) -> LibraryIndex:
+        return cls(_native.LibraryIndex.open(str(path)))
+
+    @property
+    def library_name(self) -> str:
+        return self._native.library_name
+
+    @property
+    def voltage_unit(self) -> str | None:
+        return self._native.voltage_unit
+
+    @property
+    def current_unit(self) -> str | None:
+        return self._native.current_unit
+
+    @property
+    def time_unit(self) -> str | None:
+        return self._native.time_unit
+
+    @property
+    def capacitive_load_unit(self) -> str | None:
+        return self._native.capacitive_load_unit
+
+    def energy_unit_joules(self) -> float | None:
+        return self._native.energy_unit_joules()
+
+    def templates(self) -> dict[str, list[str | None]]:
+        return self._native.templates()
+
+    def attributes(self) -> list[tuple[str, str]]:
+        return self._native.attributes()
+
+    def driver_waveforms(self) -> list[TimingTable]:
+        return [TimingTable(w) for w in self._native.driver_waveforms()]
+
+    def cell_names(self) -> list[str]:
+        return self._native.cell_names()
+
+    def num_cells(self) -> int:
+        return self._native.num_cells()
+
+    def cell(self, name: str) -> Cell:
+        return Cell(self._native.cell(name))
+
+
 def parse_file(path: str | Path, **filters: Any) -> LibertyDocument:
     return LibertyDocument(_native.parse_file(str(path), **filters))
 
@@ -447,6 +506,7 @@ __all__ = [
     "DynamicCurrent",
     "InternalPower",
     "LibertyDocument",
+    "LibraryIndex",
     "Pin",
     "PgCurrent",
     "SwitchingGroup",

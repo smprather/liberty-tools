@@ -117,13 +117,17 @@ def _reshape(values: list[float], n1: int, n2: int, n3: int, ndim: int) -> Any:
 @dataclass
 class LibertyData:
     path: str
-    doc: lt.LibertyDocument
+    doc: lt.LibraryIndex
     templates: dict[str, list[str | None]] = field(default_factory=dict)
     unit_by_kind: dict[str, str | None] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str) -> "LibertyData":
-        doc = lt.parse_file(path)
+        # LibraryIndex parses only the header up front and indexes cell byte
+        # ranges; cells are parsed on demand (one at a time) when the tree/table
+        # endpoints ask for them. This keeps open time ~seconds on multi-GB libs
+        # instead of a full parse into RAM.
+        doc = lt.LibraryIndex.open(path)
         energy = doc.energy_unit_joules()
         energy_unit = None
         if energy:
@@ -162,7 +166,7 @@ class LibertyData:
             "current_unit": self.doc.current_unit,
             "time_unit": self.doc.time_unit,
             "energy_unit_joules": self.doc.energy_unit_joules(),
-            "num_cells": len(self.doc.cells()),
+            "num_cells": self.doc.num_cells(),
             "attributes": [[k, str(v)] for k, v in self.doc.attributes()],
             "driver_waveforms": self._driver_waveforms(),
         }
@@ -198,7 +202,7 @@ class LibertyData:
     def cell_names(
         self, filter_: str | None = None, offset: int = 0, limit: int = 500
     ) -> dict[str, Any]:
-        names = self.doc.cells()
+        names = self.doc.cell_names()
         if filter_:
             f = filter_.lower()
             names = [n for n in names if f in n.lower()]
