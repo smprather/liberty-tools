@@ -434,6 +434,64 @@ library (lib) {
     assert list(w0.values) == [0.0, 1.0, 2.0, 0.0, 2.0, 4.0]
 
 
+def test_ccs_power_dynamic_current_extraction(tmp_path):
+    fixture = """
+library (ccsp_lib) {
+  output_current_template (ccsp_t) {
+    variable_1 : input_net_transition;
+    variable_2 : total_output_net_capacitance;
+    variable_3 : time;
+  }
+  cell (buf) {
+    pg_pin (VDD) { pg_type : primary_power; }
+    pg_pin (VSS) { pg_type : primary_ground; }
+    dynamic_current () {
+      related_inputs : "A";
+      related_outputs : "Y";
+      switching_group () {
+        input_switching_condition (rise);
+        output_switching_condition (rise);
+        pg_current (VDD) {
+          vector (ccsp_t) {
+            reference_time : 1.0;
+            index_1 ("5"); index_2 ("1.5");
+            index_3 ("10, 20, 30");
+            values ("0.1, 0.2, 0.05");
+          }
+        }
+        pg_current (VSS) {
+          vector (ccsp_t) {
+            reference_time : 1.0;
+            index_1 ("5"); index_2 ("1.5");
+            index_3 ("10, 20, 30");
+            values ("-0.1, -0.2, -0.05");
+          }
+        }
+      }
+    }
+  }
+}
+"""
+    path = tmp_path / "ccsp.lib"
+    path.write_text(fixture, encoding="utf-8")
+    doc = lt.parse_file(path)
+
+    dcs = doc.cell("buf").dynamic_currents()
+    assert len(dcs) == 1
+    dc = dcs[0]
+    assert (dc.related_inputs, dc.related_outputs) == ("A", "Y")
+    sgs = dc.switching_groups()
+    assert len(sgs) == 1
+    sg = sgs[0]
+    assert (sg.input_switching_condition, sg.output_switching_condition) == ("rise", "rise")
+    pgs = sg.pg_currents()
+    assert [p.pg_pin for p in pgs] == ["VDD", "VSS"]
+    vdd_vec = pgs[0].vectors()[0]
+    assert list(vdd_vec.index_3) == [10.0, 20.0, 30.0]
+    assert list(vdd_vec.values) == [0.1, 0.2, 0.05]  # VDD source: positive
+    assert list(pgs[1].vectors()[0].values) == [-0.1, -0.2, -0.05]  # VSS: negated
+
+
 def test_unbalanced_braces_report_clear_error(tmp_path):
     # A spurious '}' closes the library early, orphaning a trailing cell at the
     # top level (mirrors the ASAP7 SIMPLE-group defect).

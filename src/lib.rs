@@ -44,6 +44,7 @@ struct Cell {
     buses: Vec<BusData>,
     bundles: Vec<BundleData>,
     attributes: Vec<(String, String)>,
+    dynamic_currents: Vec<DynamicCurrentData>,
 }
 
 #[pyclass]
@@ -159,6 +160,31 @@ struct CellData {
     buses: Vec<BusData>,
     bundles: Vec<BundleData>,
     attributes: Vec<(String, String)>,
+    dynamic_currents: Vec<DynamicCurrentData>,
+}
+
+/// CCS power (`dynamic_current`): per-condition power/ground current waveforms.
+#[derive(Clone)]
+struct DynamicCurrentData {
+    related_inputs: Option<String>,
+    related_outputs: Option<String>,
+    when: Option<String>,
+    switching_groups: Vec<SwitchingGroupData>,
+}
+
+#[derive(Clone)]
+struct SwitchingGroupData {
+    input_switching_condition: Option<String>,
+    output_switching_condition: Option<String>,
+    pg_currents: Vec<PgCurrentData>,
+}
+
+#[derive(Clone)]
+struct PgCurrentData {
+    pg_pin: Option<String>,
+    /// One `vector` per (slew, cap): a current-vs-time wave (reuses the timing
+    /// table's index_1/2 = slew/cap, index_3 = time, values = current).
+    vectors: Vec<TimingTableData>,
 }
 
 #[derive(Clone)]
@@ -234,6 +260,7 @@ impl From<CellData> for Cell {
             buses: value.buses,
             bundles: value.bundles,
             attributes: value.attributes,
+            dynamic_currents: value.dynamic_currents,
         }
     }
 }
@@ -595,6 +622,109 @@ impl Cell {
     fn attributes(&self) -> Vec<(String, String)> {
         self.attributes.clone()
     }
+
+    /// CCS power (`dynamic_current`) groups.
+    fn dynamic_currents(&self) -> Vec<DynamicCurrent> {
+        self.dynamic_currents
+            .iter()
+            .cloned()
+            .map(DynamicCurrent::from)
+            .collect()
+    }
+}
+
+#[pyclass]
+#[derive(Clone)]
+struct DynamicCurrent {
+    #[pyo3(get)]
+    related_inputs: Option<String>,
+    #[pyo3(get)]
+    related_outputs: Option<String>,
+    #[pyo3(get)]
+    when: Option<String>,
+    switching_groups: Vec<SwitchingGroupData>,
+}
+
+impl From<DynamicCurrentData> for DynamicCurrent {
+    fn from(value: DynamicCurrentData) -> Self {
+        Self {
+            related_inputs: value.related_inputs,
+            related_outputs: value.related_outputs,
+            when: value.when,
+            switching_groups: value.switching_groups,
+        }
+    }
+}
+
+#[pymethods]
+impl DynamicCurrent {
+    fn switching_groups(&self) -> Vec<SwitchingGroup> {
+        self.switching_groups
+            .iter()
+            .cloned()
+            .map(SwitchingGroup::from)
+            .collect()
+    }
+}
+
+#[pyclass]
+#[derive(Clone)]
+struct SwitchingGroup {
+    #[pyo3(get)]
+    input_switching_condition: Option<String>,
+    #[pyo3(get)]
+    output_switching_condition: Option<String>,
+    pg_currents: Vec<PgCurrentData>,
+}
+
+impl From<SwitchingGroupData> for SwitchingGroup {
+    fn from(value: SwitchingGroupData) -> Self {
+        Self {
+            input_switching_condition: value.input_switching_condition,
+            output_switching_condition: value.output_switching_condition,
+            pg_currents: value.pg_currents,
+        }
+    }
+}
+
+#[pymethods]
+impl SwitchingGroup {
+    fn pg_currents(&self) -> Vec<PgCurrent> {
+        self.pg_currents
+            .iter()
+            .cloned()
+            .map(PgCurrent::from)
+            .collect()
+    }
+}
+
+#[pyclass]
+#[derive(Clone)]
+struct PgCurrent {
+    #[pyo3(get)]
+    pg_pin: Option<String>,
+    vectors: Vec<TimingTableData>,
+}
+
+impl From<PgCurrentData> for PgCurrent {
+    fn from(value: PgCurrentData) -> Self {
+        Self {
+            pg_pin: value.pg_pin,
+            vectors: value.vectors,
+        }
+    }
+}
+
+#[pymethods]
+impl PgCurrent {
+    /// One `TimingTable` per (slew, cap) — a current-vs-time wave.
+    fn vectors(&self) -> Vec<TimingTable> {
+        self.vectors
+            .iter()
+            .cloned()
+            .map(TimingTable::from)
+            .collect()
+    }
 }
 
 #[pymethods]
@@ -786,6 +916,34 @@ fn parse_file(path: &str, cells: Option<Vec<String>>) -> PyResult<Document> {
     parser.parse_document().map_err(ParseError::into_py)
 }
 
+/// Encode the lexer's token stream as strings (`W<value>` for words, `S<char>`
+/// for symbols). Comments and whitespace are not tokens, so two files with
+/// equal token streams parse identically — the basis for `liberty_format`'s
+/// functional-transparency guarantee.
+fn lex_all(reader: Box<dyn Read>) -> Result<Vec<String>, ParseError> {
+    let mut lexer = Lexer::new(reader)?;
+    let mut out = Vec::new();
+    while let Some(tok) = lexer.next_token()? {
+        match tok.kind {
+            TokenKind::Word(v) => out.push(format!("W{v}")),
+            TokenKind::Symbol(b) => out.push(format!("S{}", b as char)),
+        }
+    }
+    Ok(out)
+}
+
+#[pyfunction]
+fn tokenize(path: &str) -> PyResult<Vec<String>> {
+    let reader = open_input(path).map_err(|err| PyValueError::new_err(err.to_string()))?;
+    lex_all(reader).map_err(ParseError::into_py)
+}
+
+#[pyfunction]
+fn tokenize_str(text: &str) -> PyResult<Vec<String>> {
+    let reader: Box<dyn Read> = Box::new(io::Cursor::new(text.as_bytes().to_vec()));
+    lex_all(reader).map_err(ParseError::into_py)
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Document>()?;
@@ -797,7 +955,12 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TimingArc>()?;
     m.add_class::<TimingTable>()?;
     m.add_class::<InternalPower>()?;
+    m.add_class::<DynamicCurrent>()?;
+    m.add_class::<SwitchingGroup>()?;
+    m.add_class::<PgCurrent>()?;
     m.add_function(wrap_pyfunction!(parse_file, m)?)?;
+    m.add_function(wrap_pyfunction!(tokenize, m)?)?;
+    m.add_function(wrap_pyfunction!(tokenize_str, m)?)?;
     Ok(())
 }
 
@@ -1592,6 +1755,7 @@ impl Parser {
         let mut buses = Vec::new();
         let mut bundles = Vec::new();
         let mut attributes = Vec::new();
+        let mut dynamic_currents = Vec::new();
         while !self.consume_symbol(b'}')? {
             let item_name = self.take_word()?;
             if self.consume_symbol(b'(')? {
@@ -1612,6 +1776,9 @@ impl Parser {
                             bundles.push(
                                 self.parse_bundle_body(args.first().cloned().unwrap_or_default())?,
                             );
+                        }
+                        "dynamic_current" => {
+                            dynamic_currents.push(self.parse_dynamic_current_body()?);
                         }
                         _ => {
                             self.skip_group_body()?;
@@ -1639,7 +1806,118 @@ impl Parser {
             buses,
             bundles,
             attributes,
+            dynamic_currents,
         })
+    }
+
+    fn parse_dynamic_current_body(&mut self) -> Result<DynamicCurrentData, ParseError> {
+        let mut related_inputs = None;
+        let mut related_outputs = None;
+        let mut when = None;
+        let mut switching_groups = Vec::new();
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b'(')? {
+                let _args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    if item_name == "switching_group" {
+                        switching_groups.push(self.parse_switching_group_body()?);
+                    } else {
+                        self.skip_group_body()?;
+                    }
+                    self.consume_symbol(b';')?;
+                } else {
+                    // Complex attr (e.g. typical_capacitances) — ignored.
+                    self.consume_symbol(b';')?;
+                }
+            } else if self.consume_symbol(b':')? {
+                let value = self.read_simple_attribute_value()?;
+                match item_name.as_str() {
+                    "related_inputs" => related_inputs = Some(value),
+                    "related_outputs" => related_outputs = Some(value),
+                    "when" => when = Some(value),
+                    _ => {}
+                }
+            } else {
+                return Err(self.error_here("expected '(' or ':' in dynamic_current"));
+            }
+        }
+        Ok(DynamicCurrentData {
+            related_inputs,
+            related_outputs,
+            when,
+            switching_groups,
+        })
+    }
+
+    fn parse_switching_group_body(&mut self) -> Result<SwitchingGroupData, ParseError> {
+        let mut input_switching_condition = None;
+        let mut output_switching_condition = None;
+        let mut pg_currents = Vec::new();
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b'(')? {
+                let args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    if item_name == "pg_current" {
+                        pg_currents.push(self.parse_pg_current_body(args.first().cloned())?);
+                    } else {
+                        self.skip_group_body()?;
+                    }
+                    self.consume_symbol(b';')?;
+                } else {
+                    // `input_switching_condition (rise)` etc. are complex attrs.
+                    match item_name.as_str() {
+                        "input_switching_condition" => {
+                            input_switching_condition = args.first().cloned();
+                        }
+                        "output_switching_condition" => {
+                            output_switching_condition = args.first().cloned();
+                        }
+                        _ => {}
+                    }
+                    self.consume_symbol(b';')?;
+                }
+            } else if self.consume_symbol(b':')? {
+                let _ = self.read_simple_attribute_value()?;
+            } else {
+                return Err(self.error_here("expected '(' or ':' in switching_group"));
+            }
+        }
+        Ok(SwitchingGroupData {
+            input_switching_condition,
+            output_switching_condition,
+            pg_currents,
+        })
+    }
+
+    fn parse_pg_current_body(
+        &mut self,
+        pg_pin: Option<String>,
+    ) -> Result<PgCurrentData, ParseError> {
+        let mut vectors = Vec::new();
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b'(')? {
+                let args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    if item_name == "vector" {
+                        let tmpl = args.first().cloned();
+                        vectors.push(self.parse_timing_table_body("vector".to_string(), tmpl)?);
+                    } else {
+                        self.skip_group_body()?;
+                    }
+                    self.consume_symbol(b';')?;
+                } else {
+                    self.consume_symbol(b';')?;
+                }
+            } else if self.consume_symbol(b':')? {
+                let _ = self.read_simple_attribute_value()?;
+            } else {
+                return Err(self.error_here("expected '(' or ':' in pg_current"));
+            }
+        }
+        Ok(PgCurrentData { pg_pin, vectors })
     }
 
     fn parse_pin_body(&mut self, name: String) -> Result<PinData, ParseError> {

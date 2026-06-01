@@ -127,6 +127,10 @@ class Cell:
         """Ordered ``(name, value)`` cell-level simple/complex attributes."""
         return self._native.attributes()
 
+    def dynamic_currents(self) -> list[DynamicCurrent]:
+        """CCS power (``dynamic_current``) groups."""
+        return [DynamicCurrent(dc) for dc in self._native.dynamic_currents()]
+
 
 class Pin:
     def __init__(self, native: _native.Pin):
@@ -330,6 +334,58 @@ class InternalPower:
         return TimingTable(self._native.table(name))
 
 
+class DynamicCurrent:
+    """A ``dynamic_current`` group (CCS power: per-condition PG current waves)."""
+
+    def __init__(self, native: _native.DynamicCurrent):
+        self._native = native
+
+    @property
+    def related_inputs(self) -> str | None:
+        return self._native.related_inputs
+
+    @property
+    def related_outputs(self) -> str | None:
+        return self._native.related_outputs
+
+    @property
+    def when(self) -> str | None:
+        return self._native.when
+
+    def switching_groups(self) -> list[SwitchingGroup]:
+        return [SwitchingGroup(sg) for sg in self._native.switching_groups()]
+
+
+class SwitchingGroup:
+    def __init__(self, native: _native.SwitchingGroup):
+        self._native = native
+
+    @property
+    def input_switching_condition(self) -> str | None:
+        return self._native.input_switching_condition
+
+    @property
+    def output_switching_condition(self) -> str | None:
+        return self._native.output_switching_condition
+
+    def pg_currents(self) -> list[PgCurrent]:
+        return [PgCurrent(pg) for pg in self._native.pg_currents()]
+
+
+class PgCurrent:
+    """A ``pg_current`` group: current-vs-time waves for one PG pin."""
+
+    def __init__(self, native: _native.PgCurrent):
+        self._native = native
+
+    @property
+    def pg_pin(self) -> str | None:
+        return self._native.pg_pin
+
+    def vectors(self) -> list[TimingTable]:
+        return [TimingTable(v) for v in self._native.vectors()]
+
+
 class TimingTable:
     def __init__(self, native: _native.TimingTable):
         self._native = native
@@ -388,9 +444,12 @@ __all__ = [
     "Bus",
     "Bundle",
     "BusType",
+    "DynamicCurrent",
     "InternalPower",
     "LibertyDocument",
     "Pin",
+    "PgCurrent",
+    "SwitchingGroup",
     "TimingArc",
     "TimingTable",
     "parse_file",

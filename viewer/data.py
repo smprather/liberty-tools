@@ -245,7 +245,50 @@ class LibertyData:
             for pin_name in bundle.pins():
                 unode["children"].append(self._pin_node(bundle.pin(pin_name), container=f"bundle:{bundle_name}"))
             node["children"].append(unode)
+        node["children"].extend(self._ccsp_nodes(cell))
         return node
+
+    def _ccsp_nodes(self, cell: lt.Cell) -> list[dict[str, Any]]:
+        """CCS-power (`dynamic_current`) subtree: dynamic_current -> switching_group
+        -> pg_current leaf (a slew x cap grid of current-vs-time waves)."""
+        out: list[dict[str, Any]] = []
+        for dci, dc in enumerate(cell.dynamic_currents()):
+            io = " -> ".join(x for x in (dc.related_inputs, dc.related_outputs) if x)
+            dnode: dict[str, Any] = {
+                "id": f"ccsp:{dci}",
+                "label": f"dynamic_current (CCSP){' [' + io + ']' if io else ''}",
+                "type": "dynamic",
+                "attributes": _meta_attrs(
+                    {
+                        "related_inputs": dc.related_inputs,
+                        "related_outputs": dc.related_outputs,
+                        "when": dc.when,
+                    }
+                ),
+                "children": [],
+            }
+            for sgi, sg in enumerate(dc.switching_groups()):
+                ic, oc = sg.input_switching_condition, sg.output_switching_condition
+                snode: dict[str, Any] = {
+                    "id": f"ccsp:{dci}:{sgi}",
+                    "label": f"in {ic or '?'} / out {oc or '?'}",
+                    "type": "switchgroup",
+                    "attributes": _meta_attrs(
+                        {
+                            "input_switching_condition": ic,
+                            "output_switching_condition": oc,
+                        }
+                    ),
+                    "children": [],
+                }
+                for pgi, pg in enumerate(sg.pg_currents()):
+                    pin = pg.pg_pin or f"pg{pgi}"
+                    leaf = self._table_leaf("ccsp", pin, f"{dci}:{sgi}", pgi, pin)
+                    leaf["label"] = f"pg_current {pin}"
+                    snode["children"].append(leaf)
+                dnode["children"].append(snode)
+            out.append(dnode)
+        return out
 
     def _wrap_when(
         self, when: str | None, node_id: str, children: list[dict[str, Any]]
@@ -380,6 +423,16 @@ class LibertyData:
         container: str = "",
     ) -> dict[str, Any]:
         cell_obj = self.doc.cell(cell)
+        if container == "ccsp":
+            # group encodes "<dynamic_current idx>:<switching_group idx>",
+            # arc_index = pg_current idx, table/pin = pg pin name.
+            dci, sgi = (int(x) for x in group.split(":"))
+            pg = (
+                cell_obj.dynamic_currents()[dci]
+                .switching_groups()[sgi]
+                .pg_currents()[arc_index]
+            )
+            return self._ccs_payload(table, pg.vectors())
         pin_obj = self._resolve_pin_owner(cell_obj, container, pin)
         if group == "timing":
             arcs = pin_obj.timing_arcs()

@@ -55,6 +55,8 @@ ul.tree { padding-left: 0; }
 .node.cell > .row { color: var(--accent); }
 .node.pin > .row { color: #e6c07b; }
 .node.when > .row { color: #c792ea; }
+.node.dynamic > .row { color: #56b6c2; }
+.node.switchgroup > .row { color: #d19a66; }
 .node.table > .row { color: var(--leaf); }
 .node.selected > .row { background: #34405a; }
 .toggle { display: inline-block; width: 12px; color: var(--muted); }
