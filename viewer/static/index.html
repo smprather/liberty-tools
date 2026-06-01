@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Liberty Viewer</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="sidebar">
+    <div id="lib-meta">
+      <div id="lib-name">Loading…</div>
+      <div id="lib-units" class="muted"></div>
+    </div>
+    <input id="filter" type="search" placeholder="filter cells…" autocomplete="off" />
+    <div id="cell-count" class="muted"></div>
+    <ul id="tree" class="tree"></ul>
+  </div>
+
+  <div id="main">
+    <div id="crumb" class="muted">Select a table from the tree.</div>
+    <div id="view"></div>
+    <div id="wave-section" class="hidden">
+      <div id="wave-title" class="muted"></div>
+      <div id="wave"></div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

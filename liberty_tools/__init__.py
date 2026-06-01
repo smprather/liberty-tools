@@ -14,6 +14,45 @@ class LibertyDocument:
     def library_name(self) -> str:
         return self._native.library_name
 
+    @property
+    def voltage_unit(self) -> str | None:
+        return self._native.voltage_unit
+
+    @property
+    def current_unit(self) -> str | None:
+        return self._native.current_unit
+
+    @property
+    def time_unit(self) -> str | None:
+        return self._native.time_unit
+
+    @property
+    def capacitive_load_unit(self) -> str | None:
+        """Capacitance unit, e.g. ``"ff"`` from ``capacitive_load_unit (1, ff)``."""
+        return self._native.capacitive_load_unit
+
+    def templates(self) -> dict[str, list[str | None]]:
+        """Lookup-table templates: name -> ``[variable_1, variable_2, variable_3]``."""
+        return self._native.templates()
+
+    def attributes(self) -> list[tuple[str, str]]:
+        """Ordered ``(name, value)`` library-group simple/complex attributes."""
+        return self._native.attributes()
+
+    def driver_waveforms(self) -> list[TimingTable]:
+        """``normalized_driver_waveform`` tables (input slew × normalized voltage
+        → time). ``name`` holds the ``driver_waveform_name``."""
+        return [TimingTable(w) for w in self._native.driver_waveforms()]
+
+    def energy_unit_joules(self) -> float | None:
+        """SI scale (joules) for ``internal_power`` energy values.
+
+        ``internal_power`` is a Liberty misnomer: the table values are switching
+        *energy*, not power. The scale is ``voltage_unit * current_unit *
+        time_unit``; for ASAP7 (1V, 1mA, 1ps) that is ``1e-15`` (femtojoules).
+        """
+        return self._native.energy_unit_joules()
+
     def cells(self) -> list[str]:
         return self._native.cells()
 
@@ -29,12 +68,29 @@ class LibertyDocument:
     def timing_tables(self, **filters: Any) -> list[dict[str, Any]]:
         return self._native.timing_tables(**filters)
 
+    def internal_power_tables(self, **filters: Any) -> list[dict[str, Any]]:
+        """Flattened ``internal_power`` (rise_power/fall_power) table rows.
+
+        Values are switching energy in library units; multiply by
+        :meth:`energy_unit_joules` for joules. Non-propagating energy on input
+        pins (input switches, no output switch) appears here too, typically as
+        groups with no ``related_pin`` and a 1-D table over input transition.
+        """
+        return self._native.internal_power_tables(**filters)
+
     def to_polars(self, kind: str = "timing", **filters: Any):
-        if kind != "timing":
-            raise ValueError("only kind='timing' is supported")
+        if kind == "timing":
+            rows = self.timing_tables(**filters)
+        elif kind == "power":
+            rows = self.internal_power_tables(**filters)
+        else:
+            raise ValueError("kind must be 'timing' or 'power'")
         import polars as pl
 
-        return pl.DataFrame(self.timing_tables(**filters))
+        # Scan all rows for schema: optional columns (when, related_pin, …) are
+        # null in the first rows but become strings later, which trips Polars'
+        # default 100-row inference.
+        return pl.DataFrame(rows, infer_schema_length=None)
 
 
 class Cell:
@@ -66,6 +122,10 @@ class Cell:
 
     def bundle(self, name: str) -> Bundle:
         return Bundle(self._native.bundle(name))
+
+    def attributes(self) -> list[tuple[str, str]]:
+        """Ordered ``(name, value)`` cell-level simple/complex attributes."""
+        return self._native.attributes()
 
 
 class Pin:
@@ -99,6 +159,26 @@ class Pin:
                 when=when,
             )
         ]
+
+    def internal_power(
+        self,
+        *,
+        related_pin: str | None = None,
+        related_pg_pin: str | None = None,
+        when: str | None = None,
+    ) -> list[InternalPower]:
+        return [
+            InternalPower(group)
+            for group in self._native.internal_power(
+                related_pin=related_pin,
+                related_pg_pin=related_pg_pin,
+                when=when,
+            )
+        ]
+
+    def attributes(self) -> list[tuple[str, str]]:
+        """Ordered ``(name, value)`` pin-level simple/complex attributes."""
+        return self._native.attributes()
 
 
 class Bus:
@@ -225,6 +305,31 @@ class TimingArc:
         return TimingTable(self._native.table(name))
 
 
+class InternalPower:
+    """An ``internal_power`` group (switching energy, not power)."""
+
+    def __init__(self, native: _native.InternalPower):
+        self._native = native
+
+    @property
+    def related_pin(self) -> str | None:
+        return self._native.related_pin
+
+    @property
+    def related_pg_pin(self) -> str | None:
+        return self._native.related_pg_pin
+
+    @property
+    def when(self) -> str | None:
+        return self._native.when
+
+    def tables(self) -> list[str]:
+        return self._native.tables()
+
+    def table(self, name: str) -> TimingTable:
+        return TimingTable(self._native.table(name))
+
+
 class TimingTable:
     def __init__(self, native: _native.TimingTable):
         self._native = native
@@ -242,8 +347,31 @@ class TimingTable:
         return self._native.index_2
 
     @property
+    def index_3(self) -> list[float]:
+        return self._native.index_3
+
+    @property
     def values(self) -> list[float]:
         return self._native.values
+
+    @property
+    def template(self) -> str | None:
+        """Lookup-table template name from the group header (axis variables)."""
+        return self._native.template
+
+    @property
+    def reference_time(self) -> float | None:
+        """CCS only: the ``reference_time`` of a ``vector`` group."""
+        return self._native.reference_time
+
+    def vectors(self) -> list[TimingTable]:
+        """CCS only: nested ``vector`` sub-tables (current-vs-time waves).
+
+        Empty for ordinary NLDM tables. Each vector has a single ``index_1``
+        (input slew) and ``index_2`` (output cap), an ``index_3`` time axis, and
+        ``values`` holding the output current samples.
+        """
+        return [TimingTable(v) for v in self._native.vectors()]
 
     def to_polars(self):
         import polars as pl
@@ -260,6 +388,7 @@ __all__ = [
     "Bus",
     "Bundle",
     "BusType",
+    "InternalPower",
     "LibertyDocument",
     "Pin",
     "TimingArc",

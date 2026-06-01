@@ -5,8 +5,15 @@ description = "Fast Rust-backed parser and query tools for Liberty files"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "click>=8.4.1",
+    "fastapi>=0.136.3",
     "polars>=1.40.1",
+    "rich-click>=1.9.8",
+    "uvicorn[standard]>=0.48.0",
 ]
+
+[project.scripts]
+liberty_view = "viewer.__main__:main"
 
 [build-system]
 requires = ["maturin>=1.8,<2"]
@@ -16,11 +23,19 @@ build-backend = "maturin"
 features = ["pyo3/extension-module"]
 module-name = "liberty_tools._native"
 python-source = "."
+# maturin only auto-bundles the `liberty_tools` package; the viewer (FastAPI app
+# + its static assets) must be listed explicitly so `liberty_view` works after a
+# non-editable `uv tool install .`.
+include = ["viewer/**/*.py", "viewer/static/*"]
 
 [dependency-groups]
 dev = [
     "liberty-parser>=0.0.29",
     "maturin>=1.8,<2",
+    "py7zr>=1.1.0",
     "pymupdf4llm>=1.27.2.3",
+    "pypdf>=6.12.2",
     "pytest>=9.0.1",
+    "ruff>=0.15.12",
+    "ty>=0.0.35",
 ]

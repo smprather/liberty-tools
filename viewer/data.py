@@ -1,0 +1,462 @@
+"""Data-access layer for the Liberty viewer.
+
+Wraps a parsed ``LibertyDocument`` and exposes exactly what the HTTP API needs:
+a lazily-built per-cell tree (metadata only, no table values) plus resolution of
+a single table leaf to its axes/values. Keeping value extraction per-leaf is what
+makes the design tolerant of very large libraries — the browser only ever pulls
+one table at a time.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from typing import Any
+
+import liberty_tools as lt
+
+# Physical quantity ("kind") of each template axis variable and of each table's
+# value, so axes/values can be labelled "<name> (<unit>)".
+_VAR_KIND = {
+    "input_net_transition": "time",
+    "constrained_pin_transition": "time",
+    "related_pin_transition": "time",
+    "input_transition_time": "time",
+    "time": "time",
+    "input_noise_width": "time",
+    "total_output_net_capacitance": "cap",
+    "output_net_capacitance": "cap",
+    "input_voltage": "voltage",
+    "output_voltage": "voltage",
+    "normalized_voltage": "voltage",
+    "input_noise_height": "voltage",
+}
+_VALUE_KIND = {
+    "cell_rise": "time",
+    "cell_fall": "time",
+    "rise_transition": "time",
+    "fall_transition": "time",
+    "rise_constraint": "time",
+    "fall_constraint": "time",
+    "retaining_rise": "time",
+    "retaining_fall": "time",
+    "retain_rise_slew": "time",
+    "retain_fall_slew": "time",
+    "cell_degradation": "time",
+    "output_current_rise": "current",
+    "output_current_fall": "current",
+    "rise_power": "energy",
+    "fall_power": "energy",
+    "receiver_capacitance1_rise": "cap",
+    "receiver_capacitance1_fall": "cap",
+    "receiver_capacitance2_rise": "cap",
+    "receiver_capacitance2_fall": "cap",
+}
+_SI_PREFIX = {-18: "a", -15: "f", -12: "p", -9: "n", -6: "u", -3: "m", 0: ""}
+
+# Short display aliases for axis variable names (labels only; raw names are kept
+# in the parser/API).
+_ALIAS = {
+    "total_output_net_capacitance": "load",
+    "input_net_transition": "slew",
+}
+
+
+def _meta_attrs(meta: dict[str, Any]) -> list[list[str]]:
+    """Turn a node's scalar meta dict into ordered ``[name, value]`` rows,
+    dropping empty entries — for nodes (arc/power/bus/bundle) that have no raw
+    Liberty attribute list of their own."""
+    return [[k, str(v)] for k, v in meta.items() if v not in (None, "")]
+
+
+def _bare_unit(raw: str | None) -> str | None:
+    """`"1ps"` -> `"ps"`, `"1mA"` -> `"mA"`; strip a leading numeric magnitude."""
+    if not raw:
+        return None
+    i = 0
+    while i < len(raw) and (raw[i].isdigit() or raw[i] in ".eE+-"):
+        i += 1
+    return raw[i:].strip() or None
+
+
+def _ndim(index_1: list[float], index_2: list[float], index_3: list[float]) -> int:
+    if index_3:
+        return 3
+    if index_2:
+        return 2
+    if index_1:
+        return 1
+    return 0
+
+
+def _t_peak(time: list[float], values: list[float]) -> float | None:
+    """Time at which ``abs(value)`` is largest — the scalar shown in each CCS
+    grid cell."""
+    if not values:
+        return None
+    ipk = max(range(len(values)), key=lambda k: abs(values[k]))
+    return time[ipk] if ipk < len(time) else None
+
+
+def _reshape(values: list[float], n1: int, n2: int, n3: int, ndim: int) -> Any:
+    """Reshape the parser's row-major flat ``values`` into nested lists.
+
+    Layout is row-major over (index_1 x index_2 x index_3); see CLAUDE.md.
+    """
+    if ndim <= 1:
+        return list(values)
+    if ndim == 2:
+        return [values[i * n2 : (i + 1) * n2] for i in range(n1)]
+    plane = n2 * n3
+    return [
+        [values[i * plane + j * n3 : i * plane + (j + 1) * n3] for j in range(n2)]
+        for i in range(n1)
+    ]
+
+
+@dataclass
+class LibertyData:
+    path: str
+    doc: lt.LibertyDocument
+    templates: dict[str, list[str | None]] = field(default_factory=dict)
+    unit_by_kind: dict[str, str | None] = field(default_factory=dict)
+
+    @classmethod
+    def load(cls, path: str) -> "LibertyData":
+        doc = lt.parse_file(path)
+        energy = doc.energy_unit_joules()
+        energy_unit = None
+        if energy:
+            energy_unit = _SI_PREFIX.get(round(math.log10(energy)), "") + "J"
+        unit_by_kind = {
+            "time": _bare_unit(doc.time_unit),
+            "cap": doc.capacitive_load_unit,
+            "current": _bare_unit(doc.current_unit),
+            "voltage": _bare_unit(doc.voltage_unit),
+            "energy": energy_unit,
+        }
+        return cls(path=path, doc=doc, templates=doc.templates(), unit_by_kind=unit_by_kind)
+
+    def _with_unit(self, name: str, kind: str | None) -> str:
+        unit = self.unit_by_kind.get(kind) if kind else None
+        return f"{name} ({unit})" if unit else name
+
+    def _axis_labels(self, template: str | None, table: str) -> dict[str, str]:
+        """Per-axis ("<variable> (<unit>)") and value labels for a table."""
+        vars_ = self.templates.get(template or "", [None, None, None])
+        labels = {}
+        for k, axis in enumerate(("index_1", "index_2", "index_3")):
+            var = vars_[k] if k < len(vars_) else None
+            labels[axis] = (
+                self._with_unit(_ALIAS.get(var, var), _VAR_KIND.get(var or "")) if var else axis
+            )
+        labels["value"] = self._with_unit(table, _VALUE_KIND.get(table))
+        return labels
+
+    # -- library-level metadata ------------------------------------------------
+    def meta(self) -> dict[str, Any]:
+        return {
+            "library_name": self.doc.library_name,
+            "path": self.path,
+            "voltage_unit": self.doc.voltage_unit,
+            "current_unit": self.doc.current_unit,
+            "time_unit": self.doc.time_unit,
+            "energy_unit_joules": self.doc.energy_unit_joules(),
+            "num_cells": len(self.doc.cells()),
+            "attributes": [[k, str(v)] for k, v in self.doc.attributes()],
+            "driver_waveforms": self._driver_waveforms(),
+        }
+
+    def _driver_waveforms(self) -> list[dict[str, Any]]:
+        """``normalized_driver_waveform`` tables for the library view.
+
+        Each is a 2-D table: index_1 = input slew, index_2 = normalized voltage
+        (0..1), values = time. Reshaped to ``time[slew][voltage]`` so the client
+        can draw one voltage-vs-time curve per slew.
+        """
+        t = self.unit_by_kind.get("time")
+        tu = f" ({t})" if t else ""
+        out = []
+        for i, w in enumerate(self.doc.driver_waveforms()):
+            slew = list(w.index_1)
+            volt = list(w.index_2)
+            out.append(
+                {
+                    "name": w.name or f"waveform {i + 1}",
+                    "slew": slew,
+                    "voltage": volt,
+                    "time": _reshape(list(w.values), len(slew), len(volt), 0, 2),
+                    "labels": {
+                        "slew": f"slew{tu}",
+                        "voltage": "normalized voltage",
+                        "time": f"time{tu}",
+                    },
+                }
+            )
+        return out
+
+    def cell_names(
+        self, filter_: str | None = None, offset: int = 0, limit: int = 500
+    ) -> dict[str, Any]:
+        names = self.doc.cells()
+        if filter_:
+            f = filter_.lower()
+            names = [n for n in names if f in n.lower()]
+        return {"total": len(names), "cells": names[offset : offset + limit]}
+
+    # -- per-cell tree (metadata only, no values) ------------------------------
+    def cell_tree(self, cell_name: str) -> dict[str, Any]:
+        cell = self.doc.cell(cell_name)
+        node: dict[str, Any] = {
+            "id": f"cell:{cell_name}",
+            "label": cell_name,
+            "type": "cell",
+            "meta": {"area": cell.area},
+            "attributes": cell.attributes(),
+            "children": [],
+        }
+        for pin_name in cell.pins():
+            node["children"].append(self._pin_node(cell.pin(pin_name), container=""))
+        for bus_name in cell.buses():
+            bus = cell.bus(bus_name)
+            bnode: dict[str, Any] = {
+                "id": f"bus:{bus_name}",
+                "label": f"{bus_name} (bus)",
+                "type": "bus",
+                "meta": {"direction": bus.direction, "bus_type": bus.bus_type},
+                "attributes": _meta_attrs({"direction": bus.direction, "bus_type": bus.bus_type}),
+                "children": [self._arc_node(a, "bus", bus_name, "", i) for i, a in enumerate(bus.timing_arcs())],
+            }
+            for pin_name in bus.pins():
+                bnode["children"].append(self._pin_node(bus.pin(pin_name), container=f"bus:{bus_name}"))
+            node["children"].append(bnode)
+        for bundle_name in cell.bundles():
+            bundle = cell.bundle(bundle_name)
+            unode: dict[str, Any] = {
+                "id": f"bundle:{bundle_name}",
+                "label": f"{bundle_name} (bundle)",
+                "type": "bundle",
+                "meta": {"direction": bundle.direction, "members": bundle.members},
+                "attributes": _meta_attrs(
+                    {"direction": bundle.direction, "members": ", ".join(bundle.members)}
+                ),
+                "children": [self._arc_node(a, "bundle", bundle_name, "", i) for i, a in enumerate(bundle.timing_arcs())],
+            }
+            for pin_name in bundle.pins():
+                unode["children"].append(self._pin_node(bundle.pin(pin_name), container=f"bundle:{bundle_name}"))
+            node["children"].append(unode)
+        return node
+
+    def _wrap_when(
+        self, when: str | None, node_id: str, children: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """If a ``when`` condition exists, nest ``children`` under an extra
+        ``when`` tree level; otherwise return them unchanged."""
+        if not when:
+            return children
+        return [
+            {
+                "id": f"{node_id}|when",
+                "label": f"when: {when}",
+                "type": "when",
+                "attributes": [["when", when]],
+                "children": children,
+            }
+        ]
+
+    def _pin_node(self, pin: lt.Pin, container: str) -> dict[str, Any]:
+        children: list[dict[str, Any]] = []
+        for i, arc in enumerate(pin.timing_arcs()):
+            children.append(self._arc_node(arc, "pin", pin.name, container, i))
+        for i, grp in enumerate(pin.internal_power()):
+            label = "internal_power"
+            sub = []
+            if grp.related_pin:
+                sub.append(grp.related_pin)
+            if grp.related_pg_pin:
+                sub.append(f"pg={grp.related_pg_pin}")
+            if sub:
+                label += " [" + ", ".join(sub) + "]"
+            pid = f"{container}|pin:{pin.name}|power:{i}"
+            tables = [
+                self._table_leaf(container, pin.name, "power", i, t)
+                for t in grp.tables()
+            ]
+            children.append(
+                {
+                    "id": pid,
+                    "label": label,
+                    "type": "powergrp",
+                    "meta": {
+                        "related_pin": grp.related_pin,
+                        "related_pg_pin": grp.related_pg_pin,
+                        "when": grp.when,
+                    },
+                    "attributes": _meta_attrs(
+                        {
+                            "related_pin": grp.related_pin,
+                            "related_pg_pin": grp.related_pg_pin,
+                            "when": grp.when,
+                        }
+                    ),
+                    "children": self._wrap_when(grp.when, pid, tables),
+                }
+            )
+        return {
+            "id": f"{container}|pin:{pin.name}",
+            "label": f"{pin.name}",
+            "type": "pin",
+            "meta": {"direction": pin.direction, "function": pin.function},
+            "attributes": pin.attributes(),
+            "children": children,
+        }
+
+    def _arc_node(
+        self, arc: lt.TimingArc, scope: str, owner: str, container: str, idx: int
+    ) -> dict[str, Any]:
+        parts = []
+        if arc.related_pin:
+            parts.append(f"<- {arc.related_pin}")
+        if arc.timing_type:
+            parts.append(arc.timing_type)
+        label = "timing " + " ".join(parts) if parts else "timing"
+        # For bus/bundle direct arcs, the "pin" used by /api/table is the owner name.
+        pin_for_table = owner
+        arc_id = f"{container}|{scope}:{owner}|timing:{idx}"
+        tables = [
+            self._table_leaf(
+                container if scope == "pin" else f"{scope}:{owner}",
+                pin_for_table,
+                "timing",
+                idx,
+                t,
+            )
+            for t in arc.tables()
+        ]
+        return {
+            "id": arc_id,
+            "label": label,
+            "type": "arc",
+            "meta": {
+                "related_pin": arc.related_pin,
+                "timing_type": arc.timing_type,
+                "when": arc.when,
+            },
+            "attributes": _meta_attrs(
+                {
+                    "related_pin": arc.related_pin,
+                    "timing_type": arc.timing_type,
+                    "when": arc.when,
+                }
+            ),
+            "children": self._wrap_when(arc.when, arc_id, tables),
+        }
+
+    def _table_leaf(
+        self, container: str, pin: str, group: str, arc_index: int, table: str
+    ) -> dict[str, Any]:
+        return {
+            "id": f"{container}|pin:{pin}|{group}:{arc_index}|table:{table}",
+            "label": table,
+            "type": "table",
+            "leaf": True,
+            "ref": {
+                "container": container,
+                "pin": pin,
+                "group": group,
+                "arc_index": arc_index,
+                "table": table,
+            },
+        }
+
+    # -- resolve one table leaf to axes + values -------------------------------
+    def table(
+        self,
+        cell: str,
+        pin: str,
+        group: str,
+        arc_index: int,
+        table: str,
+        container: str = "",
+    ) -> dict[str, Any]:
+        cell_obj = self.doc.cell(cell)
+        pin_obj = self._resolve_pin_owner(cell_obj, container, pin)
+        if group == "timing":
+            arcs = pin_obj.timing_arcs()
+            tbl = arcs[arc_index].table(table)
+        elif group == "power":
+            grps = pin_obj.internal_power()
+            tbl = grps[arc_index].table(table)
+        else:
+            raise ValueError(f"unknown group {group!r}")
+
+        vectors = tbl.vectors()
+        if vectors:
+            return self._ccs_payload(table, vectors)
+
+        i1, i2, i3 = tbl.index_1, tbl.index_2, tbl.index_3
+        ndim = _ndim(i1, i2, i3)
+        n1, n2, n3 = len(i1) or 1, len(i2) or 1, len(i3) or 1
+        return {
+            "table": table,
+            "kind": "table",
+            "ndim": ndim,
+            "index_1": i1,
+            "index_2": i2,
+            "index_3": i3,
+            "values": _reshape(tbl.values, n1, n2, n3, ndim),
+            "scalar": tbl.values[0] if ndim == 0 and tbl.values else None,
+            "labels": self._axis_labels(tbl.template, table),
+        }
+
+    def _ccs_payload(self, table: str, vectors: list) -> dict[str, Any]:
+        """CCS group -> slew x cap grid of current-vs-time waves.
+
+        Each `vector` is one point in (input slew, output cap) space holding a
+        full current(time) wave. The grid cell summary is the 95%-decay time.
+        """
+        slews = sorted({v.index_1[0] for v in vectors if v.index_1})
+        caps = sorted({v.index_2[0] for v in vectors if v.index_2})
+        si = {s: i for i, s in enumerate(slews)}
+        ci = {c: j for j, c in enumerate(caps)}
+        grid: list[list[Any]] = [[None] * len(caps) for _ in slews]
+        for v in vectors:
+            if not (v.index_1 and v.index_2):
+                continue
+            time, current = v.index_3, v.values
+            grid[si[v.index_1[0]]][ci[v.index_2[0]]] = {
+                "time": time,
+                "current": current,
+                "reference_time": v.reference_time,
+                "t_peak": _t_peak(time, current),
+            }
+        template = vectors[0].template if vectors else None
+        vars_ = self.templates.get(template or "", [None, None, None])
+        labels = {
+            "index_1": self._with_unit(_ALIAS.get(vars_[0], vars_[0]), _VAR_KIND.get(vars_[0] or "")) if vars_[0] else "slew",
+            "index_2": self._with_unit(_ALIAS.get(vars_[1], vars_[1]), _VAR_KIND.get(vars_[1] or "")) if len(vars_) > 1 and vars_[1] else "load",
+            "time": self._with_unit(vars_[2] if len(vars_) > 2 and vars_[2] else "time", "time"),
+            "current": self._with_unit("current", "current"),
+        }
+        return {
+            "table": table,
+            "kind": "ccs",
+            "index_1": slews,
+            "index_2": caps,
+            "grid": grid,
+            "labels": labels,
+        }
+
+    def _resolve_pin_owner(self, cell_obj: lt.Cell, container: str, pin: str):
+        """Return the object whose timing_arcs/internal_power we read.
+
+        ``container`` is ""/"bus:NAME"/"bundle:NAME". For a bus/bundle *direct*
+        arc the leaf encodes container="bus:NAME" and pin=NAME, so we return the
+        bus/bundle itself (it exposes timing_arcs)."""
+        if not container:
+            return cell_obj.pin(pin)
+        kind, name = container.split(":", 1)
+        owner = cell_obj.bus(name) if kind == "bus" else cell_obj.bundle(name)
+        if pin == name:
+            return owner  # direct bus/bundle arc
+        return owner.pin(pin)

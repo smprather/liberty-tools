@@ -11,7 +11,7 @@ The current implementation focuses on standard-cell timing data:
 - low-memory Rust-backed indexing
 - cell, pin, and timing arc lookup
 - bus, bundle, and Liberty `type(...)` bus definition lookup
-- timing table extraction to Python rows or Polars
+- 1D, 2D, and 3D timing table extraction to Python rows or Polars
 - Boolean-aware `when` filtering
 
 For LLM/agent-oriented API usage, see [docs/AI_API.md](docs/AI_API.md).
@@ -220,6 +220,7 @@ arc.table(name)
 table.name
 table.index_1
 table.index_2
+table.index_3
 table.values
 table.to_polars()
 ```

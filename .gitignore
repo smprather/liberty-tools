@@ -205,6 +205,12 @@ tempCodeRunnerFile.py
 
 # Local Liberty reference data
 generic80_ss_125c_1p116v_0p84v.lib
+Liberty_User_Guides_and_Reference_Manual_Suite_Version_2017.06.pdf
+liberty_spec.txt
+liberty_spec_toc.txt
+
+# ASAP5 5nm predictive PDK (nested git clone, layout/SPICE only — no Liberty libs)
+asap5/
 
 # Ruff stuff:
 .ruff_cache/

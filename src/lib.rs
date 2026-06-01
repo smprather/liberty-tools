@@ -11,6 +11,24 @@ use std::io::{self, BufReader, Read};
 struct Document {
     #[pyo3(get)]
     library_name: String,
+    #[pyo3(get)]
+    voltage_unit: Option<String>,
+    #[pyo3(get)]
+    current_unit: Option<String>,
+    #[pyo3(get)]
+    time_unit: Option<String>,
+    /// Second arg of `capacitive_load_unit (1, ff)` -> "ff".
+    #[pyo3(get)]
+    capacitive_load_unit: Option<String>,
+    /// template name -> [variable_1, variable_2, variable_3] from
+    /// `lu_table_template` / `power_lut_template` / `output_current_template`.
+    templates: Vec<(String, [Option<String>; 3])>,
+    /// Ordered library-group simple/complex attributes (technology, delay_model,
+    /// nom_*, default_*, thresholds, …) — everything that isn't a sub-group.
+    attributes: Vec<(String, String)>,
+    /// `normalized_driver_waveform` tables: index_1 = input slew, index_2 =
+    /// normalized voltage (0..1), values = time. `name` = driver_waveform_name.
+    driver_waveforms: Vec<TimingTableData>,
     cells: Vec<CellData>,
     bus_types: Vec<BusTypeData>,
 }
@@ -25,6 +43,7 @@ struct Cell {
     pins: Vec<PinData>,
     buses: Vec<BusData>,
     bundles: Vec<BundleData>,
+    attributes: Vec<(String, String)>,
 }
 
 #[pyclass]
@@ -37,6 +56,23 @@ struct Pin {
     #[pyo3(get)]
     function: Option<String>,
     timing_arcs: Vec<TimingArcData>,
+    internal_powers: Vec<InternalPowerData>,
+    attributes: Vec<(String, String)>,
+}
+
+/// An `internal_power` group. Despite the Liberty name, the table values are
+/// switching **energy** (joules in SI), not power; scale = voltage * current *
+/// time unit (see `Document::energy_unit_joules`).
+#[pyclass]
+#[derive(Clone)]
+struct InternalPower {
+    #[pyo3(get)]
+    related_pin: Option<String>,
+    #[pyo3(get)]
+    related_pg_pin: Option<String>,
+    #[pyo3(get)]
+    when: Option<String>,
+    tables: Vec<TimingTableData>,
 }
 
 #[pyclass]
@@ -99,7 +135,20 @@ struct TimingTable {
     #[pyo3(get)]
     index_2: Vec<f64>,
     #[pyo3(get)]
+    index_3: Vec<f64>,
+    #[pyo3(get)]
     values: Vec<f64>,
+    /// The lookup-table template named in the group header, e.g. `cell_rise
+    /// (delay_template_7x7_x1)` -> `delay_template_7x7_x1`. Resolves axis
+    /// variable names via `Document::templates`.
+    #[pyo3(get)]
+    template: Option<String>,
+    /// CCS only: the `reference_time` of a `vector` group.
+    #[pyo3(get)]
+    reference_time: Option<f64>,
+    /// CCS only: nested `vector` sub-tables (one current-vs-time wave each) for
+    /// `output_current_*` / `ccsn_*` groups. Empty for ordinary NLDM tables.
+    vectors: Vec<TimingTableData>,
 }
 
 #[derive(Clone)]
@@ -109,6 +158,7 @@ struct CellData {
     pins: Vec<PinData>,
     buses: Vec<BusData>,
     bundles: Vec<BundleData>,
+    attributes: Vec<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -117,6 +167,16 @@ struct PinData {
     direction: Option<String>,
     function: Option<String>,
     timing_arcs: Vec<TimingArcData>,
+    internal_powers: Vec<InternalPowerData>,
+    attributes: Vec<(String, String)>,
+}
+
+#[derive(Clone)]
+struct InternalPowerData {
+    related_pin: Option<String>,
+    related_pg_pin: Option<String>,
+    when: Option<String>,
+    tables: Vec<TimingTableData>,
 }
 
 #[derive(Clone)]
@@ -158,7 +218,11 @@ struct TimingTableData {
     name: String,
     index_1: Vec<f64>,
     index_2: Vec<f64>,
+    index_3: Vec<f64>,
     values: Vec<f64>,
+    template: Option<String>,
+    reference_time: Option<f64>,
+    vectors: Vec<TimingTableData>,
 }
 
 impl From<CellData> for Cell {
@@ -169,6 +233,7 @@ impl From<CellData> for Cell {
             pins: value.pins,
             buses: value.buses,
             bundles: value.bundles,
+            attributes: value.attributes,
         }
     }
 }
@@ -180,6 +245,19 @@ impl From<PinData> for Pin {
             direction: value.direction,
             function: value.function,
             timing_arcs: value.timing_arcs,
+            internal_powers: value.internal_powers,
+            attributes: value.attributes,
+        }
+    }
+}
+
+impl From<InternalPowerData> for InternalPower {
+    fn from(value: InternalPowerData) -> Self {
+        Self {
+            related_pin: value.related_pin,
+            related_pg_pin: value.related_pg_pin,
+            when: value.when,
+            tables: value.tables,
         }
     }
 }
@@ -236,7 +314,11 @@ impl From<TimingTableData> for TimingTable {
             name: value.name,
             index_1: value.index_1,
             index_2: value.index_2,
+            index_3: value.index_3,
             values: value.values,
+            template: value.template,
+            reference_time: value.reference_time,
+            vectors: value.vectors,
         }
     }
 }
@@ -380,6 +462,89 @@ impl Document {
         }
         Ok(rows)
     }
+
+    /// SI scale (joules) for `internal_power` energy values: voltage * current *
+    /// time unit. ASAP7 (1V, 1mA, 1ps) -> 1e-15 = femtojoules.
+    fn energy_unit_joules(&self) -> Option<f64> {
+        Some(
+            unit_scale(self.voltage_unit.as_deref()?)?
+                * unit_scale(self.current_unit.as_deref()?)?
+                * unit_scale(self.time_unit.as_deref()?)?,
+        )
+    }
+
+    /// Lookup-table templates: name -> [variable_1, variable_2, variable_3].
+    /// Used to label table axes with their physical quantity.
+    fn templates<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let map = PyDict::new(py);
+        for (name, vars) in &self.templates {
+            let list = PyList::empty(py);
+            for v in vars {
+                list.append(v.as_deref())?;
+            }
+            map.set_item(name, list)?;
+        }
+        Ok(map)
+    }
+
+    /// Ordered `(name, value)` library-group simple/complex attributes.
+    fn attributes(&self) -> Vec<(String, String)> {
+        self.attributes.clone()
+    }
+
+    /// `normalized_driver_waveform` tables (index_1 = slew, index_2 = normalized
+    /// voltage, values = time). `name` holds the driver_waveform_name.
+    fn driver_waveforms(&self) -> Vec<TimingTable> {
+        self.driver_waveforms
+            .iter()
+            .cloned()
+            .map(TimingTable::from)
+            .collect()
+    }
+
+    #[pyo3(signature = (cell=None, pin=None, related_pin=None, related_pg_pin=None, when=None, table=None))]
+    fn internal_power_tables<'py>(
+        &self,
+        py: Python<'py>,
+        cell: Option<&str>,
+        pin: Option<&str>,
+        related_pin: Option<&str>,
+        related_pg_pin: Option<&str>,
+        when: Option<&str>,
+        table: Option<&str>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let when_filter = WhenFilter::new(when)?;
+        let rows = PyList::empty(py);
+        for cell_data in &self.cells {
+            if !matches_opt(cell, &cell_data.name) {
+                continue;
+            }
+            let mut pin_groups: Vec<&PinData> = cell_data.pins.iter().collect();
+            for bus_data in &cell_data.buses {
+                pin_groups.extend(bus_data.pins.iter());
+            }
+            for bundle_data in &cell_data.bundles {
+                pin_groups.extend(bundle_data.pins.iter());
+            }
+            for pin_data in pin_groups {
+                if !matches_opt(pin, &pin_data.name) {
+                    continue;
+                }
+                append_matching_power_tables(
+                    py,
+                    &rows,
+                    &cell_data.name,
+                    &pin_data.name,
+                    &pin_data.internal_powers,
+                    related_pin,
+                    related_pg_pin,
+                    &when_filter,
+                    table,
+                )?;
+            }
+        }
+        Ok(rows)
+    }
 }
 
 #[pymethods]
@@ -425,6 +590,11 @@ impl Cell {
             .map(Bundle::from)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown bundle {name:?}")))
     }
+
+    /// Ordered `(name, value)` simple/complex attributes of the cell group.
+    fn attributes(&self) -> Vec<(String, String)> {
+        self.attributes.clone()
+    }
 }
 
 #[pymethods]
@@ -437,6 +607,48 @@ impl Pin {
         when: Option<&str>,
     ) -> PyResult<Vec<TimingArc>> {
         filter_timing_arcs(&self.timing_arcs, related_pin, timing_type, when)
+    }
+
+    #[pyo3(signature = (related_pin=None, related_pg_pin=None, when=None))]
+    fn internal_power(
+        &self,
+        related_pin: Option<&str>,
+        related_pg_pin: Option<&str>,
+        when: Option<&str>,
+    ) -> PyResult<Vec<InternalPower>> {
+        let when_filter = WhenFilter::new(when)?;
+        Ok(self
+            .internal_powers
+            .iter()
+            .filter(|group| {
+                matches_opt_opt(related_pin, group.related_pin.as_deref())
+                    && matches_opt_opt(related_pg_pin, group.related_pg_pin.as_deref())
+                    && when_filter.matches(group.when.as_deref())
+            })
+            .cloned()
+            .map(InternalPower::from)
+            .collect())
+    }
+
+    /// Ordered `(name, value)` simple/complex attributes of the pin group.
+    fn attributes(&self) -> Vec<(String, String)> {
+        self.attributes.clone()
+    }
+}
+
+#[pymethods]
+impl InternalPower {
+    fn tables(&self) -> Vec<String> {
+        self.tables.iter().map(|table| table.name.clone()).collect()
+    }
+
+    fn table(&self, name: &str) -> PyResult<TimingTable> {
+        self.tables
+            .iter()
+            .find(|table| table.name == name)
+            .cloned()
+            .map(TimingTable::from)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown power table {name:?}")))
     }
 }
 
@@ -528,6 +740,15 @@ impl TimingArc {
 
 #[pymethods]
 impl TimingTable {
+    /// CCS `vector` sub-tables (current-vs-time waves). Empty for NLDM tables.
+    fn vectors(&self) -> Vec<TimingTable> {
+        self.vectors
+            .iter()
+            .cloned()
+            .map(TimingTable::from)
+            .collect()
+    }
+
     fn rows<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let rows = PyList::empty(py);
         append_table_rows(
@@ -545,7 +766,11 @@ impl TimingTable {
                 name: self.name.clone(),
                 index_1: self.index_1.clone(),
                 index_2: self.index_2.clone(),
+                index_3: self.index_3.clone(),
                 values: self.values.clone(),
+                template: self.template.clone(),
+                reference_time: self.reference_time,
+                vectors: Vec::new(),
             },
         )?;
         Ok(rows)
@@ -571,6 +796,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BusType>()?;
     m.add_class::<TimingArc>()?;
     m.add_class::<TimingTable>()?;
+    m.add_class::<InternalPower>()?;
     m.add_function(wrap_pyfunction!(parse_file, m)?)?;
     Ok(())
 }
@@ -583,7 +809,6 @@ fn append_table_rows<'py>(
     arc: &TimingArcData,
     table: &TimingTableData,
 ) -> PyResult<()> {
-    let cols = table_cols(table);
     for (idx, value) in table.values.iter().enumerate() {
         let row = PyDict::new(py);
         row.set_item("cell", cell)?;
@@ -592,12 +817,13 @@ fn append_table_rows<'py>(
         row.set_item("timing_type", arc.timing_type.as_deref())?;
         row.set_item("when", arc.when.as_deref())?;
         row.set_item("table", &table.name)?;
-        let i = if cols == 0 { idx } else { idx / cols };
-        let j = if cols == 0 { 0 } else { idx % cols };
+        let (i, j, k) = table_position(table, idx);
         row.set_item("index_1", table.index_1.get(i).copied())?;
         row.set_item("index_2", table.index_2.get(j).copied())?;
+        row.set_item("index_3", table.index_3.get(k).copied())?;
         row.set_item("row", i)?;
         row.set_item("col", j)?;
+        row.set_item("depth", k)?;
         row.set_item("value", value)?;
         rows.append(row)?;
     }
@@ -631,13 +857,65 @@ fn append_matching_arc_tables<'py>(
     Ok(())
 }
 
-fn table_cols(table: &TimingTableData) -> usize {
-    if !table.index_2.is_empty() {
-        table.index_2.len()
+#[allow(clippy::too_many_arguments)]
+fn append_matching_power_tables<'py>(
+    py: Python<'py>,
+    rows: &Bound<'py, PyList>,
+    cell: &str,
+    pin: &str,
+    groups: &[InternalPowerData],
+    related_pin: Option<&str>,
+    related_pg_pin: Option<&str>,
+    when_filter: &WhenFilter,
+    table: Option<&str>,
+) -> PyResult<()> {
+    for group in groups {
+        if !matches_opt_opt(related_pin, group.related_pin.as_deref())
+            || !matches_opt_opt(related_pg_pin, group.related_pg_pin.as_deref())
+            || !when_filter.matches(group.when.as_deref())
+        {
+            continue;
+        }
+        for power_table in &group.tables {
+            if !matches_opt(table, &power_table.name) {
+                continue;
+            }
+            for (idx, value) in power_table.values.iter().enumerate() {
+                let row = PyDict::new(py);
+                row.set_item("cell", cell)?;
+                row.set_item("pin", pin)?;
+                row.set_item("related_pin", group.related_pin.as_deref())?;
+                row.set_item("related_pg_pin", group.related_pg_pin.as_deref())?;
+                row.set_item("when", group.when.as_deref())?;
+                row.set_item("table", &power_table.name)?;
+                let (i, j, k) = table_position(power_table, idx);
+                row.set_item("index_1", power_table.index_1.get(i).copied())?;
+                row.set_item("index_2", power_table.index_2.get(j).copied())?;
+                row.set_item("index_3", power_table.index_3.get(k).copied())?;
+                row.set_item("row", i)?;
+                row.set_item("col", j)?;
+                row.set_item("depth", k)?;
+                row.set_item("value", value)?;
+                rows.append(row)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn table_position(table: &TimingTableData, idx: usize) -> (usize, usize, usize) {
+    if !table.index_3.is_empty() {
+        let n3 = table.index_3.len();
+        let n2 = table.index_2.len().max(1);
+        let plane = n2 * n3;
+        (idx / plane, (idx % plane) / n3, idx % n3)
+    } else if !table.index_2.is_empty() {
+        let n2 = table.index_2.len();
+        (idx / n2, idx % n2, 0)
     } else if !table.index_1.is_empty() {
-        table.index_1.len()
+        (idx, 0, 0)
     } else {
-        table.values.len()
+        (0, idx, 0)
     }
 }
 
@@ -1136,6 +1414,17 @@ impl Lexer {
     }
 }
 
+#[derive(Default)]
+struct LibraryUnits {
+    voltage: Option<String>,
+    current: Option<String>,
+    time: Option<String>,
+    capacitive_load: Option<String>,
+    templates: Vec<(String, [Option<String>; 3])>,
+    attributes: Vec<(String, String)>,
+    driver_waveforms: Vec<TimingTableData>,
+}
+
 struct Parser {
     lexer: Lexer,
     current: Option<Token>,
@@ -1160,8 +1449,27 @@ impl Parser {
         let mut library_name = String::new();
         let mut cells = Vec::new();
         let mut bus_types = Vec::new();
+        let mut units = LibraryUnits::default();
 
         while self.current.is_some() {
+            // A '}' here has no matching open group at top level: the file has
+            // unbalanced braces (e.g. the ASAP7 SIMPLE group ships a spurious
+            // '}' that closes `library` early). Report it instead of failing
+            // later with a cryptic "expected identifier" at the next token.
+            if let Some(Token {
+                kind: TokenKind::Symbol(b'}'),
+                line,
+                column,
+            }) = self.current
+            {
+                return Err(ParseError::new(
+                    line,
+                    column,
+                    "unexpected '}': unbalanced braces (a group has an extra \
+                     closing brace, or an opening brace is missing earlier)",
+                ));
+            }
+            let name_pos = self.current_position();
             let name = self.take_word()?;
             let args = if self.consume_symbol(b'(')? {
                 self.read_args(&name)?
@@ -1171,9 +1479,20 @@ impl Parser {
             self.expect_symbol(b'{')?;
             if name == "library" {
                 library_name = args.first().cloned().unwrap_or_default();
-                self.parse_library_body(&mut cells, &mut bus_types)?;
+                self.parse_library_body(&mut cells, &mut bus_types, &mut units)?;
             } else {
-                self.skip_group_body()?;
+                // The only valid top-level group is `library`. Anything else
+                // here (commonly a `cell` left orphaned by a premature library
+                // close) signals unbalanced braces.
+                let (line, column) = name_pos;
+                return Err(ParseError::new(
+                    line,
+                    column,
+                    &format!(
+                        "unexpected top-level {name:?} group: expected a single \
+                         'library' group (unbalanced braces may have closed it early)"
+                    ),
+                ));
             }
             self.consume_symbol(b';')?;
         }
@@ -1184,6 +1503,13 @@ impl Parser {
 
         Ok(Document {
             library_name,
+            voltage_unit: units.voltage,
+            current_unit: units.current,
+            time_unit: units.time,
+            capacitive_load_unit: units.capacitive_load,
+            templates: units.templates,
+            attributes: units.attributes,
+            driver_waveforms: units.driver_waveforms,
             cells,
             bus_types,
         })
@@ -1193,6 +1519,7 @@ impl Parser {
         &mut self,
         cells: &mut Vec<CellData>,
         bus_types: &mut Vec<BusTypeData>,
+        units: &mut LibraryUnits,
     ) -> Result<(), ParseError> {
         while !self.consume_symbol(b'}')? {
             let name = self.take_word()?;
@@ -1219,16 +1546,39 @@ impl Parser {
                                 )?,
                             );
                         }
+                        "lu_table_template" | "power_lut_template" | "output_current_template" => {
+                            let tmpl_name = args.first().cloned().unwrap_or_default();
+                            let vars = self.parse_template_body()?;
+                            units.templates.push((tmpl_name, vars));
+                        }
+                        "normalized_driver_waveform" => {
+                            let tmpl = args.first().cloned();
+                            units
+                                .driver_waveforms
+                                .push(self.parse_timing_table_body(String::new(), tmpl)?);
+                        }
                         _ => {
                             self.skip_group_body()?;
                         }
                     }
                     self.consume_symbol(b';')?;
                 } else {
+                    // Complex attribute, e.g. `capacitive_load_unit (1, ff)`.
+                    if name == "capacitive_load_unit" {
+                        units.capacitive_load = args.get(1).cloned();
+                    }
+                    units.attributes.push((name, args.join(", ")));
                     self.consume_symbol(b';')?;
                 }
             } else if self.consume_symbol(b':')? {
-                self.skip_attribute_value()?;
+                let value = self.read_simple_attribute_value()?;
+                match name.as_str() {
+                    "voltage_unit" => units.voltage = Some(value.clone()),
+                    "current_unit" => units.current = Some(value.clone()),
+                    "time_unit" => units.time = Some(value.clone()),
+                    _ => {}
+                }
+                units.attributes.push((name, value));
             } else {
                 return Err(self.error_here("expected '(' or ':' after library item name"));
             }
@@ -1241,6 +1591,7 @@ impl Parser {
         let mut pins = Vec::new();
         let mut buses = Vec::new();
         let mut bundles = Vec::new();
+        let mut attributes = Vec::new();
         while !self.consume_symbol(b'}')? {
             let item_name = self.take_word()?;
             if self.consume_symbol(b'(')? {
@@ -1268,6 +1619,7 @@ impl Parser {
                     }
                     self.consume_symbol(b';')?;
                 } else {
+                    attributes.push((item_name, args.join(", ")));
                     self.consume_symbol(b';')?;
                 }
             } else if self.consume_symbol(b':')? {
@@ -1275,6 +1627,7 @@ impl Parser {
                 if item_name == "area" {
                     area = parse_number(&value);
                 }
+                attributes.push((item_name, value));
             } else {
                 return Err(self.error_here("expected '(' or ':' after cell item name"));
             }
@@ -1285,6 +1638,7 @@ impl Parser {
             pins,
             buses,
             bundles,
+            attributes,
         })
     }
 
@@ -1292,13 +1646,59 @@ impl Parser {
         let mut direction = None;
         let mut function = None;
         let mut timing_arcs = Vec::new();
+        let mut internal_powers = Vec::new();
+        let mut attributes = Vec::new();
         while !self.consume_symbol(b'}')? {
             let item_name = self.take_word()?;
             if self.consume_symbol(b'(')? {
-                let _args = self.read_args(&item_name)?;
+                let args = self.read_args(&item_name)?;
                 if self.consume_symbol(b'{')? {
-                    if item_name == "timing" {
-                        timing_arcs.push(self.parse_timing_body()?);
+                    match item_name.as_str() {
+                        "timing" => timing_arcs.push(self.parse_timing_body()?),
+                        "internal_power" => internal_powers.push(self.parse_internal_power_body()?),
+                        _ => self.skip_group_body()?,
+                    }
+                    self.consume_symbol(b';')?;
+                } else {
+                    // Complex attribute, e.g. `rise_capacitance_range (0.55, 0.74)`.
+                    attributes.push((item_name, args.join(", ")));
+                    self.consume_symbol(b';')?;
+                }
+            } else if self.consume_symbol(b':')? {
+                let value = self.read_simple_attribute_value()?;
+                match item_name.as_str() {
+                    "direction" => direction = Some(value.clone()),
+                    "function" => function = Some(value.clone()),
+                    _ => {}
+                }
+                attributes.push((item_name, value));
+            } else {
+                return Err(self.error_here("expected '(' or ':' after pin item name"));
+            }
+        }
+        Ok(PinData {
+            name,
+            direction,
+            function,
+            timing_arcs,
+            internal_powers,
+            attributes,
+        })
+    }
+
+    fn parse_internal_power_body(&mut self) -> Result<InternalPowerData, ParseError> {
+        let mut related_pin = None;
+        let mut related_pg_pin = None;
+        let mut when = None;
+        let mut tables = Vec::new();
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b'(')? {
+                let args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    if is_power_table_group(&item_name) {
+                        let template = args.first().cloned();
+                        tables.push(self.parse_timing_table_body(item_name, template)?);
                     } else {
                         self.skip_group_body()?;
                     }
@@ -1309,19 +1709,20 @@ impl Parser {
             } else if self.consume_symbol(b':')? {
                 let value = self.read_simple_attribute_value()?;
                 match item_name.as_str() {
-                    "direction" => direction = Some(value),
-                    "function" => function = Some(value),
+                    "related_pin" => related_pin = Some(value),
+                    "related_pg_pin" => related_pg_pin = Some(value),
+                    "when" => when = Some(value),
                     _ => {}
                 }
             } else {
-                return Err(self.error_here("expected '(' or ':' after pin item name"));
+                return Err(self.error_here("expected '(' or ':' after internal_power item name"));
             }
         }
-        Ok(PinData {
-            name,
-            direction,
-            function,
-            timing_arcs,
+        Ok(InternalPowerData {
+            related_pin,
+            related_pg_pin,
+            when,
+            tables,
         })
     }
 
@@ -1357,6 +1758,8 @@ impl Parser {
                             direction: direction.clone(),
                             function: None,
                             timing_arcs: Vec::new(),
+                            internal_powers: Vec::new(),
+                            attributes: Vec::new(),
                         }));
                     }
                     self.consume_symbol(b';')?;
@@ -1455,6 +1858,33 @@ impl Parser {
         Ok(BusTypeData { name, attributes })
     }
 
+    /// Read `variable_1/2/3` from a lookup-table template group, skipping the
+    /// index rows. Returns the three axis variable names (any may be None).
+    fn parse_template_body(&mut self) -> Result<[Option<String>; 3], ParseError> {
+        let mut vars: [Option<String>; 3] = [None, None, None];
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b'(')? {
+                let _args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    self.skip_group_body()?;
+                }
+                self.consume_symbol(b';')?;
+            } else if self.consume_symbol(b':')? {
+                let value = self.read_simple_attribute_value()?;
+                match item_name.as_str() {
+                    "variable_1" => vars[0] = Some(value),
+                    "variable_2" => vars[1] = Some(value),
+                    "variable_3" => vars[2] = Some(value),
+                    _ => {}
+                }
+            } else {
+                return Err(self.error_here("expected '(' or ':' in template body"));
+            }
+        }
+        Ok(vars)
+    }
+
     fn parse_timing_body(&mut self) -> Result<TimingArcData, ParseError> {
         let mut related_pin = None;
         let mut timing_type = None;
@@ -1463,10 +1893,11 @@ impl Parser {
         while !self.consume_symbol(b'}')? {
             let item_name = self.take_word()?;
             if self.consume_symbol(b'(')? {
-                let _args = self.read_args(&item_name)?;
+                let args = self.read_args(&item_name)?;
                 if self.consume_symbol(b'{')? {
                     if is_timing_table_group(&item_name) {
-                        tables.push(self.parse_timing_table_body(item_name)?);
+                        let template = args.first().cloned();
+                        tables.push(self.parse_timing_table_body(item_name, template)?);
                     } else {
                         self.skip_group_body()?;
                     }
@@ -1494,23 +1925,50 @@ impl Parser {
         })
     }
 
-    fn parse_timing_table_body(&mut self, name: String) -> Result<TimingTableData, ParseError> {
+    fn parse_timing_table_body(
+        &mut self,
+        mut name: String,
+        template: Option<String>,
+    ) -> Result<TimingTableData, ParseError> {
         let mut index_1 = Vec::new();
         let mut index_2 = Vec::new();
+        let mut index_3 = Vec::new();
         let mut values = Vec::new();
+        let mut reference_time = None;
+        let mut vectors = Vec::new();
         while !self.consume_symbol(b'}')? {
             let item_name = self.take_word()?;
             if self.consume_symbol(b'(')? {
                 let args = self.read_args(&item_name)?;
-                self.consume_symbol(b';')?;
-                match item_name.as_str() {
-                    "index_1" => index_1 = parse_float_list(args.first()),
-                    "index_2" => index_2 = parse_float_list(args.first()),
-                    "values" => values = parse_float_args(&args),
-                    _ => {}
+                if self.consume_symbol(b'{')? {
+                    // A nested group: CCS `output_current_*` / `ccsn_*` tables
+                    // contain `vector` sub-groups, each a current-vs-time wave.
+                    if item_name == "vector" {
+                        let vtemplate = args.first().cloned();
+                        vectors.push(self.parse_timing_table_body(item_name, vtemplate)?);
+                    } else {
+                        self.skip_group_body()?;
+                    }
+                    self.consume_symbol(b';')?;
+                } else {
+                    self.consume_symbol(b';')?;
+                    match item_name.as_str() {
+                        "index_1" => index_1 = parse_float_list(args.first()),
+                        "index_2" => index_2 = parse_float_list(args.first()),
+                        "index_3" => index_3 = parse_float_list(args.first()),
+                        "values" => values = parse_float_args(&args),
+                        _ => {}
+                    }
                 }
             } else if self.consume_symbol(b':')? {
-                self.skip_attribute_value()?;
+                let value = self.read_simple_attribute_value()?;
+                if item_name == "reference_time" {
+                    reference_time = parse_number(&value);
+                } else if item_name == "driver_waveform_name" {
+                    // normalized_driver_waveform groups name themselves here, not
+                    // in the group header (which holds the template name).
+                    name = value;
+                }
             } else {
                 return Err(self.error_here("expected '(' or ':' after table item name"));
             }
@@ -1519,7 +1977,11 @@ impl Parser {
             name,
             index_1,
             index_2,
+            index_3,
             values,
+            template,
+            reference_time,
+            vectors,
         })
     }
 
@@ -1585,16 +2047,6 @@ impl Parser {
         Ok(parts.join(" "))
     }
 
-    fn skip_attribute_value(&mut self) -> Result<(), ParseError> {
-        while !self.consume_symbol(b';')? {
-            if self.current.is_none() {
-                return Err(self.error_here("unexpected end of file in attribute value"));
-            }
-            self.advance()?;
-        }
-        Ok(())
-    }
-
     fn take_word(&mut self) -> Result<String, ParseError> {
         match self.current.clone() {
             Some(Token {
@@ -1655,12 +2107,16 @@ impl Parser {
         Ok(())
     }
 
-    fn error_here(&self, message: &str) -> ParseError {
-        if let Some(token) = &self.current {
-            ParseError::new(token.line, token.column, message)
-        } else {
-            ParseError::new(self.lexer.line, self.lexer.column, message)
+    fn current_position(&self) -> (usize, usize) {
+        match &self.current {
+            Some(token) => (token.line, token.column),
+            None => (self.lexer.line, self.lexer.column),
         }
+    }
+
+    fn error_here(&self, message: &str) -> ParseError {
+        let (line, column) = self.current_position();
+        ParseError::new(line, column, message)
     }
 }
 
@@ -1687,11 +2143,51 @@ fn is_timing_table_group(name: &str) -> bool {
             | "retain_fall_slew"
             | "output_current_rise"
             | "output_current_fall"
+            | "ccst_rise"
+            | "ccst_fall"
+            | "ccsp_rise"
+            | "ccsp_fall"
+            | "ccsn_first_stage"
+            | "ccsn_last_stage"
+            | "ccsn_rise_first_stage"
+            | "ccsn_rise_last_stage"
+            | "ccsn_fall_first_stage"
+            | "ccsn_fall_last_stage"
             | "receiver_capacitance1_rise"
             | "receiver_capacitance1_fall"
             | "receiver_capacitance2_rise"
             | "receiver_capacitance2_fall"
     )
+}
+
+fn is_power_table_group(name: &str) -> bool {
+    matches!(name, "rise_power" | "fall_power" | "power")
+}
+
+/// Parse a Liberty unit string (e.g. "1mA", "1ps", "1V") into its SI scale.
+/// Returns magnitude * SI-prefix factor; "1mA" -> 1e-3, "1ps" -> 1e-12.
+fn unit_scale(value: &str) -> Option<f64> {
+    let value = value.trim();
+    let split = value.find(|ch: char| ch.is_ascii_alphabetic())?;
+    let (number, unit) = value.split_at(split);
+    let magnitude: f64 = number.trim().parse().unwrap_or(1.0);
+    // A multi-char unit (e.g. "mA", "ps") carries an SI prefix; "V"/"A"/"s" do not.
+    let prefix_factor = if unit.len() >= 2 {
+        match unit.chars().next()? {
+            'f' => 1e-15,
+            'p' => 1e-12,
+            'n' => 1e-9,
+            'u' => 1e-6,
+            'm' => 1e-3,
+            'k' => 1e3,
+            'M' => 1e6,
+            'G' => 1e9,
+            _ => 1.0,
+        }
+    } else {
+        1.0
+    };
+    Some(magnitude * prefix_factor)
 }
 
 fn parse_number(value: &str) -> Option<f64> {

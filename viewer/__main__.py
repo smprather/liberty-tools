@@ -1,0 +1,115 @@
+"""``liberty_view`` CLI — serve the browser-based Liberty data viewer.
+
+Run: ``uv run liberty_view [LIBERTY_FILE] [--port N]`` (or, once installed with
+``uv tool install .``, just ``liberty_view``).
+"""
+
+from __future__ import annotations
+
+import os
+import socket
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+import webbrowser
+
+import rich_click as click
+import uvicorn
+
+click.rich_click.USE_RICH_MARKUP = True
+click.rich_click.SHOW_ARGUMENTS = True
+click.rich_click.STYLE_OPTION_DEFAULT = "dim cyan"
+
+
+def _pick_port(host: str, start: int, span: int = 64) -> int:
+    """Return the first free TCP port at or after ``start`` (scanning ``span``).
+
+    The requested port is often already taken (a previous viewer still running),
+    so walk forward instead of failing with ``address already in use``. Detect a
+    free port by probing with ``connect_ex``: a refused connection (non-zero)
+    means nothing is listening there.
+    """
+    for port in range(start, start + span):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex((host, port)) != 0:
+                return port
+    raise click.ClickException(
+        f"no free port in {start}..{start + span - 1} on {host}"
+    )
+
+
+def _open_when_ready(url: str, timeout: float = 15.0) -> None:
+    """Wait for the HTTP server to respond, then open the browser.
+
+    ``uvicorn.run`` blocks, so this runs in a daemon thread. It waits on an
+    actual HTTP request (not just a TCP accept) so the first page load never
+    races FastAPI startup. On Linux/WSL the default ``webbrowser.open`` can
+    resolve to a non-GUI handler, so force ``xdg-open`` via a BackgroundBrowser.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            urllib.request.urlopen(url, timeout=0.3)  # noqa: S310 (localhost)
+            break
+        except urllib.error.HTTPError:
+            break  # any HTTP status means the server is up and answering
+        except OSError:
+            time.sleep(0.15)
+    else:
+        return  # never came up; nothing to open
+    if sys.platform.startswith("linux"):
+        webbrowser.BackgroundBrowser("xdg-open").open(url)
+    else:
+        webbrowser.open(url)
+
+
+@click.command()
+@click.argument(
+    "liberty_file",
+    default="dev.lib",
+    type=click.Path(dir_okay=False),
+)
+@click.option("--host", default="127.0.0.1", show_default=True, help="Bind address.")
+@click.option("--port", default=8000, show_default=True, type=int, help="TCP port.")
+@click.option(
+    "--reload",
+    is_flag=True,
+    help="Auto-reload on source changes (development).",
+)
+@click.option(
+    "--open-browser/--no-open-browser",
+    default=True,
+    help="Open the viewer in the default browser once the server is up (default: true).",
+)
+def main(
+    liberty_file: str, host: str, port: int, reload: bool, open_browser: bool
+) -> None:
+    """Browse a **Liberty** (`.lib` / `.lib.gz`) library in the browser.
+
+    Sidebar tree of cells → pins → timing/power arcs → tables; scalars render as
+    tables, 1-D as line plots, 2-D as heatmap + surface, 3-D/CCS as a clickable
+    grid that opens a wave plot. The server is cell/leaf-scoped, so the browser
+    never loads the whole file at once.
+    """
+    os.environ["LIBERTY_FILE"] = liberty_file
+    # 0.0.0.0 / "" are bind-all; point the browser and the probe at loopback.
+    view_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    requested = port
+    port = _pick_port(view_host, port)
+    if port != requested:
+        click.secho(f"port {requested} busy; using {port}", fg="yellow")
+    url = f"http://{view_host}:{port}"
+
+    click.secho(f"Serving {liberty_file} at ", nl=False)
+    click.secho(url, fg="cyan", bold=True)
+
+    if open_browser:
+        threading.Thread(target=_open_when_ready, args=(url,), daemon=True).start()
+
+    uvicorn.run("viewer.server:app", host=host, port=port, reload=reload)
+
+
+if __name__ == "__main__":
+    main()

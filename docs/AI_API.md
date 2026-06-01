@@ -71,6 +71,7 @@ arc.table(name: str) -> TimingTable
 table.name -> str
 table.index_1 -> list[float]
 table.index_2 -> list[float]
+table.index_3 -> list[float]
 table.values -> list[float]
 table.to_polars() -> polars.DataFrame
 ```
@@ -88,8 +89,10 @@ when: str | None
 table: str
 index_1: float | None
 index_2: float | None
+index_3: float | None
 row: int
 col: int
+depth: int
 value: float
 ```
 
@@ -153,6 +156,17 @@ for type_name in doc.bus_types():
 
 Nested bus or bundle pins are exposed through `bus.pins()` / `bundle.pins()`.
 Timing tables attached to nested pins are included by `doc.to_polars(...)`.
+
+## 3-Axis Tables
+
+CCST/CCSP style tables with `index_1`, `index_2`, and `index_3` are flattened
+in row-major order. Treat the axes as slew, load, and time when the source
+Liberty table uses that convention:
+
+```python
+df = doc.to_polars(table="output_current_rise")
+df.select("index_1", "index_2", "index_3", "value")
+```
 
 ## Do And Do Not
 
