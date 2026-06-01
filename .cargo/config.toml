@@ -1,0 +1,8 @@
+# Offline builds: use the crates vendored under vendor/cargo instead of the
+# crates.io registry. Regenerate after changing Cargo.toml with:
+#   cargo vendor vendor/cargo
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor/cargo"
