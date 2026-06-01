@@ -6,6 +6,7 @@ Run: ``uv run liberty_view [LIBERTY_FILE] [--port N]`` (or, once installed with
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
 import os
 import socket
 import sys
@@ -18,9 +19,16 @@ import webbrowser
 import rich_click as click
 import uvicorn
 
-click.rich_click.USE_RICH_MARKUP = True
+click.rich_click.TEXT_MARKUP = "rich"
 click.rich_click.SHOW_ARGUMENTS = True
 click.rich_click.STYLE_OPTION_DEFAULT = "dim cyan"
+
+
+def _package_version() -> str:
+    try:
+        return version("liberty-tools")
+    except PackageNotFoundError:
+        return "0.0.0+unknown"
 
 
 def _pick_port(host: str, start: int, span: int = 64) -> int:
@@ -82,6 +90,11 @@ def _open_when_ready(url: str, timeout: float = 15.0) -> None:
     "--open-browser/--no-open-browser",
     default=True,
     help="Open the viewer in the default browser once the server is up (default: true).",
+)
+@click.version_option(
+    version=_package_version(),
+    prog_name="liberty_view",
+    message="%(prog)s %(version)s",
 )
 def main(
     liberty_file: str, host: str, port: int, reload: bool, open_browser: bool
