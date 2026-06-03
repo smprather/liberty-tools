@@ -467,9 +467,23 @@ function renderHeatmap(view, data, ref) {
   const surf = document.createElement("div");
   view.appendChild(surf);
   const zmax = Math.max(...data.values.flat());
+  // Markers at the actual table grid points overlaid on the interpolated surface.
+  const px = [];
+  const py = [];
+  const pz = [];
+  data.index_1.forEach((yv, i) =>
+    data.index_2.forEach((xv, j) => {
+      px.push(xv);
+      py.push(yv);
+      pz.push(data.values[i][j]);
+    })
+  );
   Plotly.newPlot(surf, [{
     z: data.values, x: data.index_2, y: data.index_1,
     type: "surface", colorscale: "Viridis", showscale: false, hovertemplate: hover,
+  }, {
+    x: px, y: py, z: pz, type: "scatter3d", mode: "markers",
+    marker: { size: 2, color: "#11131a" }, hovertemplate: hover, name: "points",
   }], {
     ...PLOT_LAYOUT,
     height: 460,
