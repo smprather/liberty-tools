@@ -589,6 +589,25 @@ function _sliceGroup(text, kind, name) {
   return end < 0 ? null : text.slice(start, end + 1);
 }
 
+// Slice the `indices`-th anonymous `kind (...) { ... }` group(s) out of text, in
+// file order — used to trim to one exact timing()/internal_power() group.
+function _sliceGroupOccurrences(text, kind, indices) {
+  const re = new RegExp(`(?:^|\\n)[ \\t]*${_escRe(kind)}[ \\t]*\\([^)]*\\)[ \\t]*\\{`, "g");
+  const heads = [];
+  let m;
+  while ((m = re.exec(text))) {
+    heads.push(m.index + (text[m.index] === "\n" ? 1 : 0));
+  }
+  const want = new Set(indices);
+  const out = [];
+  for (let k = 0; k < heads.length; k++) {
+    if (!want.has(k)) continue;
+    const end = _matchBrace(text, text.indexOf("{", heads[k]));
+    if (end >= 0) out.push(text.slice(heads[k], end + 1));
+  }
+  return out.length ? out.join("\n") : null;
+}
+
 async function showSource(cell, src) {
   src = src || { kind: "cell", name: cell };
   const sec = document.getElementById("source-section");
@@ -607,7 +626,20 @@ async function showSource(cell, src) {
   const d = _sourceCache[cell];
   let text = d.text;
   let label = `${cell} · cell`;
-  if (src.kind !== "cell") {
+  if (src.kind === "group") {
+    // Exact sub-group: slice the container, then the listed group occurrences.
+    const c = src.container;
+    const container = c.kind === "cell" ? d.text : _sliceGroup(d.text, c.kind, c.name);
+    const slice = container && _sliceGroupOccurrences(container, src.group, src.indices);
+    if (slice) {
+      text = slice;
+      const n = src.indices.length;
+      label = `${c.name} · ${src.group}${n > 1 ? ` ×${n}` : ""}`;
+    } else if (container) {
+      text = container;
+      label = `${c.name} · ${c.kind}`;
+    }
+  } else if (src.kind !== "cell") {
     const slice = _sliceGroup(d.text, src.kind, src.name);
     if (slice !== null) {
       text = slice;

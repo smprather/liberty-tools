@@ -102,6 +102,18 @@ def _fmt_attr_rows(rows: list[tuple[str, str]]) -> list[list[str]]:
     return [[k, _fmt_bool(v) if k in _BOOL_ATTRS else v] for k, v in rows]
 
 
+def _group_src(container_kind: str, owner: str, group: str, indices: list[int]) -> dict[str, Any]:
+    """Source locator for an anonymous sub-group: the `indices`-th `group (...)`
+    block(s) inside the named `container` (e.g. the 0th `timing` group of pin Y).
+    Lets the client trim the source pane to exactly the selected line item."""
+    return {
+        "kind": "group",
+        "container": {"kind": container_kind, "name": owner},
+        "group": group,
+        "indices": indices,
+    }
+
+
 def _propagate_src(node: dict[str, Any], parent_src: dict[str, str]) -> None:
     """Stamp every node with a source scope (cell/pin/bus/bundle group): nodes
     that don't define their own inherit the nearest named ancestor's."""
@@ -490,6 +502,7 @@ class LibertyData:
                 "type": "powergrp",
                 "meta": meta,
                 "attributes": _meta_attrs(meta),
+                "src": _group_src("pin", pin.name, "internal_power", [idx]),
                 "children": self._wrap_when(grp.when, pid, tables_for(idx, grp)),
             }
 
@@ -506,6 +519,7 @@ class LibertyData:
                     "type": "pgpin",
                     "meta": {"related_pg_pin": grp.related_pg_pin},
                     "attributes": _meta_attrs({"related_pg_pin": grp.related_pg_pin}),
+                    "src": _group_src("pin", pin.name, "internal_power", [idx]),
                     "children": tables_for(idx, grp),
                 }
             )
@@ -570,6 +584,7 @@ class LibertyData:
                 "attributes": _meta_attrs(
                     {"related_pin": first.related_pin, "timing_type": first.timing_type}
                 ),
+                "src": _group_src(scope, owner, "timing", [idx]),
                 "children": tables_for(idx, arc),
             }
 
@@ -590,6 +605,7 @@ class LibertyData:
                             "timing_type": arc.timing_type,
                         }
                     ),
+                    "src": _group_src(scope, owner, "timing", [idx]),
                     "children": tables_for(idx, arc),
                 }
             )
@@ -601,6 +617,7 @@ class LibertyData:
             "attributes": _meta_attrs(
                 {"related_pin": first.related_pin, "timing_type": first.timing_type}
             ),
+            "src": _group_src(scope, owner, "timing", [i for i, _ in members]),
             "children": when_children,
         }
 
