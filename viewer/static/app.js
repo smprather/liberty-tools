@@ -13,10 +13,15 @@ async function api(path) {
   return res.json();
 }
 
+// Snapshot of what the client is currently showing; dumped to a file by the
+// "Dump Debug" button (only present under `liberty_view --dev`).
+const debugState = { meta: null, openCells: {}, lastTable: null };
+
 // ---- library meta + cell list ---------------------------------------------
 async function loadMeta() {
   const m = await api("/api/meta");
   const nameEl = document.getElementById("lib-name");
+  debugState.meta = m;
   nameEl.textContent = m.library_name;
   nameEl.classList.add("clickable");
   nameEl.onclick = () => {
@@ -74,6 +79,7 @@ function cellNode(name) {
     row.querySelector(".toggle").textContent = open ? "▾" : "▸";
     if (open && !cellData) {
       cellData = await api(`/api/cells/${encodeURIComponent(name)}`);
+      debugState.openCells[name] = cellData;
       for (const child of cellData.children || []) kids.appendChild(treeNode(child, name));
     }
     if (open && cellData) {
@@ -249,6 +255,7 @@ async function loadTable(cell, ref) {
     `${cell} · ${ref.container ? ref.container + " · " : ""}${ref.pin} · ${ref.group} · ${ref.table}`;
   try {
     const data = await api(`/api/table?${params}`);
+    debugState.lastTable = { cell, ref, data };
     renderTable(data, ref);
   } catch (e) {
     document.getElementById("view").innerHTML =
@@ -465,6 +472,44 @@ function hideWave() {
   document.getElementById("wave-section").classList.add("hidden");
 }
 
+// ---- debug dump (only when the server runs with --dev) ---------------------
+async function dumpDebug() {
+  const status = document.getElementById("dump-status");
+  const payload = {
+    timestamp: new Date().toISOString(),
+    url: location.href,
+    crumb: document.getElementById("crumb").textContent,
+    selected:
+      document.querySelector(".node.selected > .row")?.textContent?.trim() || null,
+    meta: debugState.meta,
+    openCells: debugState.openCells,
+    lastTable: debugState.lastTable,
+  };
+  try {
+    const res = await fetch("/api/debug", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const out = await res.json();
+    status.textContent = `wrote ${out.path}`;
+  } catch (e) {
+    status.textContent = `dump failed: ${e.message}`;
+  }
+}
+
+async function initDevBar() {
+  try {
+    const cfg = await api("/api/config");
+    if (!cfg.dev) return;
+    document.getElementById("devbar").classList.remove("hidden");
+    document.getElementById("dump-debug").addEventListener("click", dumpDebug);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
 // ---- boot ------------------------------------------------------------------
 document.getElementById("filter").addEventListener("input", (e) => {
   clearTimeout(filterTimer);
@@ -474,3 +519,4 @@ document.getElementById("filter").addEventListener("input", (e) => {
 
 loadMeta().catch((e) => (document.getElementById("lib-name").textContent = "error: " + e.message));
 loadCells("").catch((e) => console.error(e));
+initDevBar();

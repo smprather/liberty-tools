@@ -229,7 +229,7 @@ class LibertyData:
                 "type": "bus",
                 "meta": {"direction": bus.direction, "bus_type": bus.bus_type},
                 "attributes": _meta_attrs({"direction": bus.direction, "bus_type": bus.bus_type}),
-                "children": [self._arc_node(a, "bus", bus_name, "", i) for i, a in enumerate(bus.timing_arcs())],
+                "children": self._arc_nodes(list(bus.timing_arcs()), "bus", bus_name, ""),
             }
             for pin_name in bus.pins():
                 bnode["children"].append(self._pin_node(bus.pin(pin_name), container=f"bus:{bus_name}"))
@@ -244,7 +244,7 @@ class LibertyData:
                 "attributes": _meta_attrs(
                     {"direction": bundle.direction, "members": ", ".join(bundle.members)}
                 ),
-                "children": [self._arc_node(a, "bundle", bundle_name, "", i) for i, a in enumerate(bundle.timing_arcs())],
+                "children": self._arc_nodes(list(bundle.timing_arcs()), "bundle", bundle_name, ""),
             }
             for pin_name in bundle.pins():
                 unode["children"].append(self._pin_node(bundle.pin(pin_name), container=f"bundle:{bundle_name}"))
@@ -313,8 +313,7 @@ class LibertyData:
 
     def _pin_node(self, pin: lt.Pin, container: str) -> dict[str, Any]:
         children: list[dict[str, Any]] = []
-        for i, arc in enumerate(pin.timing_arcs()):
-            children.append(self._arc_node(arc, "pin", pin.name, container, i))
+        children.extend(self._arc_nodes(list(pin.timing_arcs()), "pin", pin.name, container))
         for i, grp in enumerate(pin.internal_power()):
             label = "internal_power"
             sub = []
@@ -358,45 +357,87 @@ class LibertyData:
             "children": children,
         }
 
-    def _arc_node(
-        self, arc: lt.TimingArc, scope: str, owner: str, container: str, idx: int
+    def _arc_nodes(
+        self, arcs: list[lt.TimingArc], scope: str, owner: str, container: str
+    ) -> list[dict[str, Any]]:
+        """Build timing-arc tree nodes, collapsing arcs that share the same
+        identity (``related_pin`` + ``timing_type``) under one node with each
+        ``when`` as a sub-level. Arcs that differ only by ``when`` are the same
+        physical arc split by state, so they read better grouped together."""
+        groups: dict[tuple[str, str], list[tuple[int, lt.TimingArc]]] = {}
+        order: list[tuple[str, str]] = []
+        for i, arc in enumerate(arcs):
+            key = (arc.related_pin or "", arc.timing_type or "")
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append((i, arc))
+        return [self._arc_group_node(groups[key], scope, owner, container) for key in order]
+
+    def _arc_group_node(
+        self,
+        members: list[tuple[int, lt.TimingArc]],
+        scope: str,
+        owner: str,
+        container: str,
     ) -> dict[str, Any]:
+        first = members[0][1]
         parts = []
-        if arc.related_pin:
-            parts.append(f"<- {arc.related_pin}")
-        if arc.timing_type:
-            parts.append(arc.timing_type)
+        if first.related_pin:
+            parts.append(f"<- {first.related_pin}")
+        if first.timing_type:
+            parts.append(first.timing_type)
         label = "timing " + " ".join(parts) if parts else "timing"
         # For bus/bundle direct arcs, the "pin" used by /api/table is the owner name.
-        pin_for_table = owner
-        arc_id = f"{container}|{scope}:{owner}|timing:{idx}"
-        tables = [
-            self._table_leaf(
-                container if scope == "pin" else f"{scope}:{owner}",
-                pin_for_table,
-                "timing",
-                idx,
-                t,
+        base = container if scope == "pin" else f"{scope}:{owner}"
+
+        def tables_for(idx: int, arc: lt.TimingArc) -> list[dict[str, Any]]:
+            return [self._table_leaf(base, owner, "timing", idx, t) for t in arc.tables()]
+
+        # Lone unconditional arc: tables hang straight off the arc node.
+        if len(members) == 1 and not first.when:
+            idx, arc = members[0]
+            arc_id = f"{container}|{scope}:{owner}|timing:{idx}"
+            return {
+                "id": arc_id,
+                "label": label,
+                "type": "arc",
+                "meta": {"related_pin": first.related_pin, "timing_type": first.timing_type},
+                "attributes": _meta_attrs(
+                    {"related_pin": first.related_pin, "timing_type": first.timing_type}
+                ),
+                "children": tables_for(idx, arc),
+            }
+
+        # Otherwise one arc node, each member's `when` a sub-level beneath it.
+        group_id = f"{container}|{scope}:{owner}|timinggrp:{first.related_pin or ''}:{first.timing_type or ''}"
+        when_children = []
+        for idx, arc in members:
+            arc_id = f"{container}|{scope}:{owner}|timing:{idx}"
+            when_children.append(
+                {
+                    "id": f"{arc_id}|when",
+                    "label": f"when: {arc.when}" if arc.when else "when: (unconditional)",
+                    "type": "when",
+                    "attributes": _meta_attrs(
+                        {
+                            "when": arc.when,
+                            "related_pin": arc.related_pin,
+                            "timing_type": arc.timing_type,
+                        }
+                    ),
+                    "children": tables_for(idx, arc),
+                }
             )
-            for t in arc.tables()
-        ]
         return {
-            "id": arc_id,
+            "id": group_id,
             "label": label,
             "type": "arc",
-            "meta": {
-                "related_pin": arc.related_pin,
-                "timing_type": arc.timing_type,
-                "when": arc.when,
-            },
+            "meta": {"related_pin": first.related_pin, "timing_type": first.timing_type},
             "attributes": _meta_attrs(
-                {
-                    "related_pin": arc.related_pin,
-                    "timing_type": arc.timing_type,
-                    "when": arc.when,
-                }
+                {"related_pin": first.related_pin, "timing_type": first.timing_type}
             ),
-            "children": self._wrap_when(arc.when, arc_id, tables),
+            "children": when_children,
         }
 
     def _table_leaf(

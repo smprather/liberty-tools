@@ -9,6 +9,7 @@ pulls more than one table at a time — the basis for tolerating multi-GB files.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -19,6 +20,12 @@ from fastapi.staticfiles import StaticFiles
 from .data import LibertyData
 
 STATIC_DIR = Path(__file__).parent / "static"
+# Fixed, predictable path so "check the debug dump" always means this file.
+DEBUG_DUMP = Path("/tmp/liberty_view_debug.json")
+
+
+def _dev_enabled() -> bool:
+    return os.environ.get("LIBERTY_DEV") == "1"
 
 app = FastAPI(title="Liberty Viewer")
 _data: LibertyData | None = None
@@ -79,6 +86,24 @@ def table(
         return get_data().table(cell, pin, group, arc_index, table, container)
     except (KeyError, IndexError) as exc:
         raise HTTPException(404, f"table not found: {exc}")
+
+
+@app.get("/api/config")
+def config():
+    """Client boot config. ``dev`` toggles the in-page Dump Debug button."""
+    return {"dev": _dev_enabled()}
+
+
+@app.post("/api/debug")
+async def debug_dump(request: Request):
+    """Persist the client's current state to ``/tmp/liberty_view_debug.json`` so
+    it can be inspected out-of-band (overwriting any prior dump). Only enabled
+    under ``--dev`` to keep a file-writing endpoint off by default."""
+    if not _dev_enabled():
+        raise HTTPException(404, "debug dump disabled (run with --dev)")
+    state = await request.json()
+    DEBUG_DUMP.write_text(json.dumps(state, indent=2))
+    return {"ok": True, "path": str(DEBUG_DUMP)}
 
 
 @app.get("/")

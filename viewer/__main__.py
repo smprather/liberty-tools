@@ -91,13 +91,24 @@ def _open_when_ready(url: str, timeout: float = 15.0) -> None:
     default=True,
     help="Open the viewer in the default browser once the server is up (default: true).",
 )
+@click.option(
+    "--dev",
+    is_flag=True,
+    help="Add a [b]Dump Debug[/] button that writes the page state to "
+    "[cyan]/tmp/liberty_view_debug.json[/] for inspection.",
+)
 @click.version_option(
     version=_package_version(),
     prog_name="liberty_view",
     message="%(prog)s %(version)s",
 )
 def main(
-    liberty_file: str, host: str, port: int, reload: bool, open_browser: bool
+    liberty_file: str,
+    host: str,
+    port: int,
+    reload: bool,
+    open_browser: bool,
+    dev: bool,
 ) -> None:
     """Browse a **Liberty** (`.lib` / `.lib.gz`) library in the browser.
 
@@ -107,6 +118,8 @@ def main(
     never loads the whole file at once.
     """
     os.environ["LIBERTY_FILE"] = liberty_file
+    if dev:
+        os.environ["LIBERTY_DEV"] = "1"
     # 0.0.0.0 / "" are bind-all; point the browser and the probe at loopback.
     view_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
     requested = port
