@@ -237,6 +237,7 @@ class LibertyData:
             "leakage_power_unit": next(
                 (v for k, v in self.doc.attributes() if k == "leakage_power_unit"), None
             ),
+            "templates": self.templates,  # name -> [var_1, var_2, var_3]
             "num_cells": self.doc.num_cells(),
             "attributes": [[k, str(v)] for k, v in self.doc.attributes()],
             "driver_waveforms": self._driver_waveforms(),

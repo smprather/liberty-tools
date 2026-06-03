@@ -661,6 +661,45 @@ function _walkPath(cellText, path) {
   return cur;
 }
 
+// Keep the lib text verbatim but annotate each `index_N (...)` line with a
+// trailing `// <variable>` comment dereferenced from its table template. Each
+// `<group> (template) {…}` block has its own template, so the lookup is scoped
+// to the innermost enclosing block (CCS `vector` groups deref correctly).
+function _annotateIndices(text, templates) {
+  const re = /(?:^|\n)[ \t]*[A-Za-z_]\w*[ \t]*\(([^)]*)\)[ \t]*\{/g;
+  const blocks = [];
+  let m;
+  while ((m = re.exec(text))) {
+    const vars = templates[m[1].trim()];
+    if (!vars) continue;
+    const open = text.indexOf("{", m.index);
+    const end = _matchBrace(text, open);
+    if (end >= 0) blocks.push({ open, end, vars });
+  }
+  if (!blocks.length) return text;
+  const varsAt = (p) => {
+    let best = null;
+    for (const b of blocks) {
+      if (p > b.open && p < b.end && (!best || b.open > best.open)) best = b;
+    }
+    return best && best.vars;
+  };
+  // Annotate index_N lines with their variable, and the `values` line with the
+  // row (outer) dimension = index_1's variable. One pass so offsets stay valid.
+  return text.replace(
+    /^([ \t]*(?:index_([123])|values)\b[^\n]*)$/gm,
+    (line, body, n, off) => {
+      const vars = varsAt(off) || [];
+      if (n) {
+        const v = vars[Number(n) - 1];
+        return v ? `${body}  // ${v}` : line;
+      }
+      const v = vars[0];
+      return v ? `${body}  // ------> ${v} ----->` : line;
+    }
+  );
+}
+
 async function showSource(cell, src) {
   src = src || { kind: "cell", name: cell };
   const sec = document.getElementById("source-section");
@@ -679,7 +718,8 @@ async function showSource(cell, src) {
   const d = _sourceCache[cell];
   const path = (src && src.path) || [];
   title.textContent = "";  // label dropped to save vertical space
-  pre.textContent = _walkPath(d.text, path);
+  const templates = (debugState.meta && debugState.meta.templates) || {};
+  pre.textContent = _annotateIndices(_walkPath(d.text, path), templates);
 }
 
 // ---- debug dump (only when the server runs with --dev) ---------------------
