@@ -51,6 +51,7 @@ version = "1.0.1-dev"
 dependencies = [
  "flate2",
  "pyo3",
+ "quine-mc_cluskey",
 ]
 
 [[package]]
@@ -153,6 +154,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "quine-mc_cluskey"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07589615d719a60c8dd8a4622e7946465dfef20d1a428f969e3443e7386d5f45"
 
 [[package]]
 name = "quote"

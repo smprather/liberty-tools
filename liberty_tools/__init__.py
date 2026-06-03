@@ -93,6 +93,82 @@ class LibertyDocument:
         return pl.DataFrame(rows, infer_schema_length=None)
 
 
+class BooleanExpression:
+    """A parsed Liberty boolean expression.
+
+    ``str(expr)`` is a minimized sum-of-products (compact, human-readable).
+    ``==`` and ``hash`` compare the canonical sum-of-minterms over the support,
+    so two expressions are equal exactly when they are logically equivalent
+    (``BooleanExpression("A | B") == BooleanExpression("B | A")``,
+    ``BooleanExpression("A & (B | !B)") == BooleanExpression("A")``).
+
+    Construct one directly from any Liberty boolean string —
+    ``BooleanExpression("CLK * D * !QN")`` — or obtain it from a parsed field via
+    the ``*_expr`` accessors (``pin.function_expr()``, ``arc.when_expr()``, …).
+    """
+
+    def __init__(self, source: str | _native.BooleanExpression):
+        if isinstance(source, str):
+            self._native = _native.BooleanExpression(source)
+        else:
+            self._native = source
+
+    @property
+    def source(self) -> str:
+        """The original (verbatim) expression text."""
+        return self._native.source
+
+    @property
+    def raw(self) -> str:
+        """Alias of :attr:`source`."""
+        return self._native.raw
+
+    @property
+    def variables(self) -> list[str]:
+        """Support variables (those the function depends on), sorted."""
+        return self._native.variables
+
+    def minterms(self) -> list[str]:
+        """Canonical product terms (sum-of-minterms over the support)."""
+        return self._native.minterms()
+
+    def canonical(self) -> str:
+        """The canonical sum-of-minterms string that backs equality/hashing."""
+        return self._native.canonical()
+
+    def minimized(self) -> str:
+        """The minimized sum-of-products string (same as ``str(self)``)."""
+        return self._native.minimized()
+
+    def eval(self, mapping: dict[str, bool] | None = None, **kwargs: bool) -> bool:
+        """Evaluate under a ``{var: bool}`` mapping and/or keyword args; unset
+        variables default to false, unknown variables are ignored."""
+        return self._native.eval(mapping, **kwargs)
+
+    def implies(self, other: BooleanExpression) -> bool:
+        """True if ``self`` logically implies ``other``."""
+        return self._native.implies(other._native)
+
+    def __str__(self) -> str:
+        return self._native.__str__()
+
+    def __repr__(self) -> str:
+        return self._native.__repr__()
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, BooleanExpression):
+            return NotImplemented
+        return self._native == other._native
+
+    def __hash__(self) -> int:
+        return hash(self._native)
+
+
+def _wrap_expr(native: _native.BooleanExpression | None) -> BooleanExpression | None:
+    """Wrap an optional native ``BooleanExpression`` (None stays None)."""
+    return BooleanExpression(native) if native is not None else None
+
+
 class Cell:
     def __init__(self, native: _native.Cell):
         self._native = native
@@ -131,6 +207,16 @@ class Cell:
         """CCS power (``dynamic_current``) groups."""
         return [DynamicCurrent(dc) for dc in self._native.dynamic_currents()]
 
+    def ff(self) -> Ff | None:
+        """The flip-flop (``ff`` / ``ff_bank``) group, if the cell is sequential."""
+        native = self._native.ff()
+        return Ff(native) if native is not None else None
+
+    def latch(self) -> Latch | None:
+        """The latch (``latch`` / ``latch_bank``) group, if present."""
+        native = self._native.latch()
+        return Latch(native) if native is not None else None
+
 
 class Pin:
     def __init__(self, native: _native.Pin):
@@ -147,6 +233,26 @@ class Pin:
     @property
     def function(self) -> str | None:
         return self._native.function
+
+    @property
+    def three_state(self) -> str | None:
+        return self._native.three_state
+
+    @property
+    def power_down_function(self) -> str | None:
+        return self._native.power_down_function
+
+    def function_expr(self) -> BooleanExpression | None:
+        """The ``function`` as a parsed :class:`BooleanExpression` (None if absent)."""
+        return _wrap_expr(self._native.function_expr())
+
+    def three_state_expr(self) -> BooleanExpression | None:
+        """The ``three_state`` condition as a :class:`BooleanExpression` (None if absent)."""
+        return _wrap_expr(self._native.three_state_expr())
+
+    def power_down_function_expr(self) -> BooleanExpression | None:
+        """The ``power_down_function`` as a :class:`BooleanExpression` (None if absent)."""
+        return _wrap_expr(self._native.power_down_function_expr())
 
     def timing_arcs(
         self,
@@ -201,6 +307,10 @@ class Bus:
     def function(self) -> str | None:
         return self._native.function
 
+    def function_expr(self) -> BooleanExpression | None:
+        """The bus ``function`` as a parsed :class:`BooleanExpression` (None if absent)."""
+        return _wrap_expr(self._native.function_expr())
+
     @property
     def bus_type(self) -> str | None:
         return self._native.bus_type
@@ -243,6 +353,10 @@ class Bundle:
     @property
     def function(self) -> str | None:
         return self._native.function
+
+    def function_expr(self) -> BooleanExpression | None:
+        """The bundle ``function`` as a parsed :class:`BooleanExpression` (None if absent)."""
+        return _wrap_expr(self._native.function_expr())
 
     @property
     def members(self) -> list[str]:
@@ -302,6 +416,18 @@ class TimingArc:
     def when(self) -> str | None:
         return self._native.when
 
+    @property
+    def sdf_cond(self) -> str | None:
+        return self._native.sdf_cond
+
+    def when_expr(self) -> BooleanExpression | None:
+        """The ``when`` condition as a parsed :class:`BooleanExpression` (None if absent)."""
+        return _wrap_expr(self._native.when_expr())
+
+    def sdf_cond_expr(self) -> BooleanExpression | None:
+        """The ``sdf_cond`` as a parsed :class:`BooleanExpression` (None if absent)."""
+        return _wrap_expr(self._native.sdf_cond_expr())
+
     def tables(self) -> list[str]:
         return self._native.tables()
 
@@ -326,6 +452,10 @@ class InternalPower:
     @property
     def when(self) -> str | None:
         return self._native.when
+
+    def when_expr(self) -> BooleanExpression | None:
+        """The ``when`` condition as a parsed :class:`BooleanExpression` (None if absent)."""
+        return _wrap_expr(self._native.when_expr())
 
     def tables(self) -> list[str]:
         return self._native.tables()
@@ -352,6 +482,10 @@ class DynamicCurrent:
     def when(self) -> str | None:
         return self._native.when
 
+    def when_expr(self) -> BooleanExpression | None:
+        """The ``when`` condition as a parsed :class:`BooleanExpression` (None if absent)."""
+        return _wrap_expr(self._native.when_expr())
+
     def switching_groups(self) -> list[SwitchingGroup]:
         return [SwitchingGroup(sg) for sg in self._native.switching_groups()]
 
@@ -367,6 +501,14 @@ class SwitchingGroup:
     @property
     def output_switching_condition(self) -> str | None:
         return self._native.output_switching_condition
+
+    def input_switching_expr(self) -> BooleanExpression | None:
+        """``input_switching_condition`` as a :class:`BooleanExpression` (None if absent)."""
+        return _wrap_expr(self._native.input_switching_expr())
+
+    def output_switching_expr(self) -> BooleanExpression | None:
+        """``output_switching_condition`` as a :class:`BooleanExpression` (None if absent)."""
+        return _wrap_expr(self._native.output_switching_expr())
 
     def pg_currents(self) -> list[PgCurrent]:
         return [PgCurrent(pg) for pg in self._native.pg_currents()]
@@ -384,6 +526,107 @@ class PgCurrent:
 
     def vectors(self) -> list[TimingTable]:
         return [TimingTable(v) for v in self._native.vectors()]
+
+
+class Ff:
+    """A flip-flop (``ff`` / ``ff_bank``) group. The boolean attributes are
+    available raw (strings) and as parsed expressions via ``*_expr``."""
+
+    def __init__(self, native: _native.Ff):
+        self._native = native
+
+    @property
+    def variable1(self) -> str | None:
+        return self._native.variable1
+
+    @property
+    def variable2(self) -> str | None:
+        return self._native.variable2
+
+    @property
+    def next_state(self) -> str | None:
+        return self._native.next_state
+
+    @property
+    def clocked_on(self) -> str | None:
+        return self._native.clocked_on
+
+    @property
+    def clocked_on_also(self) -> str | None:
+        return self._native.clocked_on_also
+
+    @property
+    def clear(self) -> str | None:
+        return self._native.clear
+
+    @property
+    def preset(self) -> str | None:
+        return self._native.preset
+
+    @property
+    def power_down_function(self) -> str | None:
+        return self._native.power_down_function
+
+    def next_state_expr(self) -> BooleanExpression | None:
+        return _wrap_expr(self._native.next_state_expr())
+
+    def clocked_on_expr(self) -> BooleanExpression | None:
+        return _wrap_expr(self._native.clocked_on_expr())
+
+    def clocked_on_also_expr(self) -> BooleanExpression | None:
+        return _wrap_expr(self._native.clocked_on_also_expr())
+
+    def clear_expr(self) -> BooleanExpression | None:
+        return _wrap_expr(self._native.clear_expr())
+
+    def preset_expr(self) -> BooleanExpression | None:
+        return _wrap_expr(self._native.preset_expr())
+
+    def power_down_function_expr(self) -> BooleanExpression | None:
+        return _wrap_expr(self._native.power_down_function_expr())
+
+
+class Latch:
+    """A latch (``latch`` / ``latch_bank``) group."""
+
+    def __init__(self, native: _native.Latch):
+        self._native = native
+
+    @property
+    def variable1(self) -> str | None:
+        return self._native.variable1
+
+    @property
+    def variable2(self) -> str | None:
+        return self._native.variable2
+
+    @property
+    def enable(self) -> str | None:
+        return self._native.enable
+
+    @property
+    def data_in(self) -> str | None:
+        return self._native.data_in
+
+    @property
+    def clear(self) -> str | None:
+        return self._native.clear
+
+    @property
+    def preset(self) -> str | None:
+        return self._native.preset
+
+    def enable_expr(self) -> BooleanExpression | None:
+        return _wrap_expr(self._native.enable_expr())
+
+    def data_in_expr(self) -> BooleanExpression | None:
+        return _wrap_expr(self._native.data_in_expr())
+
+    def clear_expr(self) -> BooleanExpression | None:
+        return _wrap_expr(self._native.clear_expr())
+
+    def preset_expr(self) -> BooleanExpression | None:
+        return _wrap_expr(self._native.preset_expr())
 
 
 class TimingTable:
@@ -499,12 +742,15 @@ def parse_file(path: str | Path, **filters: Any) -> LibertyDocument:
 
 
 __all__ = [
+    "BooleanExpression",
     "Cell",
     "Bus",
     "Bundle",
     "BusType",
     "DynamicCurrent",
+    "Ff",
     "InternalPower",
+    "Latch",
     "LibertyDocument",
     "LibraryIndex",
     "Pin",

@@ -45,6 +45,8 @@ struct Cell {
     bundles: Vec<BundleData>,
     attributes: Vec<(String, String)>,
     dynamic_currents: Vec<DynamicCurrentData>,
+    ff: Option<FfData>,
+    latch: Option<LatchData>,
 }
 
 #[pyclass]
@@ -56,6 +58,10 @@ struct Pin {
     direction: Option<String>,
     #[pyo3(get)]
     function: Option<String>,
+    #[pyo3(get)]
+    three_state: Option<String>,
+    #[pyo3(get)]
+    power_down_function: Option<String>,
     timing_arcs: Vec<TimingArcData>,
     internal_powers: Vec<InternalPowerData>,
     attributes: Vec<(String, String)>,
@@ -123,6 +129,8 @@ struct TimingArc {
     timing_type: Option<String>,
     #[pyo3(get)]
     when: Option<String>,
+    #[pyo3(get)]
+    sdf_cond: Option<String>,
     tables: Vec<TimingTableData>,
 }
 
@@ -161,6 +169,137 @@ struct CellData {
     bundles: Vec<BundleData>,
     attributes: Vec<(String, String)>,
     dynamic_currents: Vec<DynamicCurrentData>,
+    ff: Option<FfData>,
+    latch: Option<LatchData>,
+}
+
+/// A flip-flop (`ff` / `ff_bank`) group. The two header args are the
+/// state-variable names (e.g. `IQ, IQN`); the rest are boolean expressions.
+#[derive(Clone, Default)]
+struct FfData {
+    variable1: Option<String>,
+    variable2: Option<String>,
+    next_state: Option<String>,
+    clocked_on: Option<String>,
+    clocked_on_also: Option<String>,
+    clear: Option<String>,
+    preset: Option<String>,
+    power_down_function: Option<String>,
+}
+
+/// A latch (`latch` / `latch_bank`) group.
+#[derive(Clone, Default)]
+struct LatchData {
+    variable1: Option<String>,
+    variable2: Option<String>,
+    enable: Option<String>,
+    data_in: Option<String>,
+    clear: Option<String>,
+    preset: Option<String>,
+}
+
+#[pyclass]
+#[derive(Clone)]
+struct Ff {
+    #[pyo3(get)]
+    variable1: Option<String>,
+    #[pyo3(get)]
+    variable2: Option<String>,
+    #[pyo3(get)]
+    next_state: Option<String>,
+    #[pyo3(get)]
+    clocked_on: Option<String>,
+    #[pyo3(get)]
+    clocked_on_also: Option<String>,
+    #[pyo3(get)]
+    clear: Option<String>,
+    #[pyo3(get)]
+    preset: Option<String>,
+    #[pyo3(get)]
+    power_down_function: Option<String>,
+}
+
+impl From<FfData> for Ff {
+    fn from(value: FfData) -> Self {
+        Self {
+            variable1: value.variable1,
+            variable2: value.variable2,
+            next_state: value.next_state,
+            clocked_on: value.clocked_on,
+            clocked_on_also: value.clocked_on_also,
+            clear: value.clear,
+            preset: value.preset,
+            power_down_function: value.power_down_function,
+        }
+    }
+}
+
+#[pymethods]
+impl Ff {
+    fn next_state_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.next_state)
+    }
+    fn clocked_on_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.clocked_on)
+    }
+    fn clocked_on_also_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.clocked_on_also)
+    }
+    fn clear_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.clear)
+    }
+    fn preset_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.preset)
+    }
+    fn power_down_function_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.power_down_function)
+    }
+}
+
+#[pyclass]
+#[derive(Clone)]
+struct Latch {
+    #[pyo3(get)]
+    variable1: Option<String>,
+    #[pyo3(get)]
+    variable2: Option<String>,
+    #[pyo3(get)]
+    enable: Option<String>,
+    #[pyo3(get)]
+    data_in: Option<String>,
+    #[pyo3(get)]
+    clear: Option<String>,
+    #[pyo3(get)]
+    preset: Option<String>,
+}
+
+impl From<LatchData> for Latch {
+    fn from(value: LatchData) -> Self {
+        Self {
+            variable1: value.variable1,
+            variable2: value.variable2,
+            enable: value.enable,
+            data_in: value.data_in,
+            clear: value.clear,
+            preset: value.preset,
+        }
+    }
+}
+
+#[pymethods]
+impl Latch {
+    fn enable_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.enable)
+    }
+    fn data_in_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.data_in)
+    }
+    fn clear_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.clear)
+    }
+    fn preset_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.preset)
+    }
 }
 
 /// CCS power (`dynamic_current`): per-condition power/ground current waveforms.
@@ -192,6 +331,8 @@ struct PinData {
     name: String,
     direction: Option<String>,
     function: Option<String>,
+    three_state: Option<String>,
+    power_down_function: Option<String>,
     timing_arcs: Vec<TimingArcData>,
     internal_powers: Vec<InternalPowerData>,
     attributes: Vec<(String, String)>,
@@ -236,6 +377,7 @@ struct TimingArcData {
     related_pin: Option<String>,
     timing_type: Option<String>,
     when: Option<String>,
+    sdf_cond: Option<String>,
     tables: Vec<TimingTableData>,
 }
 
@@ -261,6 +403,8 @@ impl From<CellData> for Cell {
             bundles: value.bundles,
             attributes: value.attributes,
             dynamic_currents: value.dynamic_currents,
+            ff: value.ff,
+            latch: value.latch,
         }
     }
 }
@@ -271,6 +415,8 @@ impl From<PinData> for Pin {
             name: value.name,
             direction: value.direction,
             function: value.function,
+            three_state: value.three_state,
+            power_down_function: value.power_down_function,
             timing_arcs: value.timing_arcs,
             internal_powers: value.internal_powers,
             attributes: value.attributes,
@@ -330,6 +476,7 @@ impl From<TimingArcData> for TimingArc {
             related_pin: value.related_pin,
             timing_type: value.timing_type,
             when: value.when,
+            sdf_cond: value.sdf_cond,
             tables: value.tables,
         }
     }
@@ -631,6 +778,16 @@ impl Cell {
             .map(DynamicCurrent::from)
             .collect()
     }
+
+    /// The flip-flop (`ff` / `ff_bank`) group, if the cell is sequential.
+    fn ff(&self) -> Option<Ff> {
+        self.ff.clone().map(Ff::from)
+    }
+
+    /// The latch (`latch` / `latch_bank`) group, if present.
+    fn latch(&self) -> Option<Latch> {
+        self.latch.clone().map(Latch::from)
+    }
 }
 
 #[pyclass]
@@ -665,6 +822,11 @@ impl DynamicCurrent {
             .map(SwitchingGroup::from)
             .collect()
     }
+
+    /// The `when` condition as a parsed `BooleanExpression` (None if absent).
+    fn when_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.when)
+    }
 }
 
 #[pyclass]
@@ -695,6 +857,16 @@ impl SwitchingGroup {
             .cloned()
             .map(PgCurrent::from)
             .collect()
+    }
+
+    /// `input_switching_condition` as a parsed `BooleanExpression` (None if absent).
+    fn input_switching_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.input_switching_condition)
+    }
+
+    /// `output_switching_condition` as a parsed `BooleanExpression` (None if absent).
+    fn output_switching_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.output_switching_condition)
     }
 }
 
@@ -764,6 +936,21 @@ impl Pin {
     fn attributes(&self) -> Vec<(String, String)> {
         self.attributes.clone()
     }
+
+    /// The pin `function` as a parsed `BooleanExpression` (None if absent).
+    fn function_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.function)
+    }
+
+    /// The `three_state` condition as a parsed `BooleanExpression` (None if absent).
+    fn three_state_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.three_state)
+    }
+
+    /// The `power_down_function` as a parsed `BooleanExpression` (None if absent).
+    fn power_down_function_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.power_down_function)
+    }
 }
 
 #[pymethods]
@@ -779,6 +966,11 @@ impl InternalPower {
             .cloned()
             .map(TimingTable::from)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown power table {name:?}")))
+    }
+
+    /// The `when` condition as a parsed `BooleanExpression` (None if absent).
+    fn when_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.when)
     }
 }
 
@@ -806,6 +998,11 @@ impl Bus {
     ) -> PyResult<Vec<TimingArc>> {
         filter_timing_arcs(&self.timing_arcs, related_pin, timing_type, when)
     }
+
+    /// The bus `function` as a parsed `BooleanExpression` (None if absent).
+    fn function_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.function)
+    }
 }
 
 #[pymethods]
@@ -831,6 +1028,11 @@ impl Bundle {
         when: Option<&str>,
     ) -> PyResult<Vec<TimingArc>> {
         filter_timing_arcs(&self.timing_arcs, related_pin, timing_type, when)
+    }
+
+    /// The bundle `function` as a parsed `BooleanExpression` (None if absent).
+    fn function_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.function)
     }
 }
 
@@ -866,6 +1068,16 @@ impl TimingArc {
             .map(TimingTable::from)
             .ok_or_else(|| PyKeyError::new_err(format!("unknown timing table {name:?}")))
     }
+
+    /// The `when` condition as a parsed `BooleanExpression` (None if absent).
+    fn when_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.when)
+    }
+
+    /// The `sdf_cond` condition as a parsed `BooleanExpression` (None if absent).
+    fn sdf_cond_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.sdf_cond)
+    }
 }
 
 #[pymethods]
@@ -890,6 +1102,7 @@ impl TimingTable {
                 related_pin: None,
                 timing_type: None,
                 when: None,
+                sdf_cond: None,
                 tables: Vec::new(),
             },
             &TimingTableData {
@@ -959,6 +1172,9 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SwitchingGroup>()?;
     m.add_class::<PgCurrent>()?;
     m.add_class::<LibraryIndex>()?;
+    m.add_class::<BooleanExpression>()?;
+    m.add_class::<Ff>()?;
+    m.add_class::<Latch>()?;
     m.add_function(wrap_pyfunction!(parse_file, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize_str, m)?)?;
@@ -1252,10 +1468,31 @@ impl<'a> BoolParser<'a> {
             if self.consume('&') || self.consume('*') {
                 let right = self.parse_not()?;
                 expr = BoolExpr::And(Box::new(expr), Box::new(right));
+            } else if self.at_primary_start() {
+                // Liberty Table 7-4: a space is AND, so `A B` == `A & B`. The
+                // suffix `'` is excluded below, so `A'B` parses as Not(A) & B.
+                let right = self.parse_not()?;
+                expr = BoolExpr::And(Box::new(expr), Box::new(right));
             } else {
                 return Ok(expr);
             }
         }
+    }
+
+    /// True if the next non-whitespace char can begin a primary/`not` term,
+    /// i.e. an implicit (juxtaposition) AND should be inserted here. False for
+    /// the binary/suffix operators and `)` (which terminate an AND chain) and
+    /// for end-of-input.
+    fn at_primary_start(&self) -> bool {
+        let mut probe = self.pos;
+        while let Some(ch) = self.input[probe..].chars().next() {
+            if ch.is_whitespace() {
+                probe += ch.len_utf8();
+            } else {
+                return !matches!(ch, '|' | '+' | '^' | '&' | '*' | '\'' | ')');
+            }
+        }
+        false
     }
 
     fn parse_not(&mut self) -> Result<BoolExpr, String> {
@@ -1335,6 +1572,339 @@ impl<'a> BoolParser<'a> {
 
     fn is_eof(&self) -> bool {
         self.pos >= self.input.len()
+    }
+}
+
+// ---- canonical / minimized boolean forms -----------------------------------
+//
+// Enumeration is over the *mentioned* variables (support discovery needs the
+// full truth table), so the 2^n cost is bounded by this cap rather than the
+// support size. Real Liberty `function`/`when` expressions use a handful of
+// variables; 12 is a generous ceiling and keeps both the truth-table and the
+// Quine-McCluskey minimizer fast.
+const BOOL_VAR_CAP: usize = 12;
+
+/// Render one product term: literals sorted alphabetically by variable name,
+/// each as `VAR` or `!VAR`, joined by `*`.
+fn render_term(mut lits: Vec<(String, bool)>) -> String {
+    lits.sort_by(|a, b| a.0.cmp(&b.0));
+    lits.into_iter()
+        .map(|(name, neg)| if neg { format!("!{name}") } else { name })
+        .collect::<Vec<_>>()
+        .join("*")
+}
+
+/// Canonical sum-of-minterms over the expression's *support* (vacuous variables
+/// eliminated, so `A & (B | !B)` canonicalizes to `A`). Returns the sorted
+/// support, the sorted product-term strings, and their `+`-joined canonical
+/// string. Tautology -> "1", contradiction -> "0". `mentioned` must be the
+/// sorted, cap-checked list of variables the expression names.
+fn canonical_minterm_parts(
+    expr: &BoolExpr,
+    mentioned: &[String],
+) -> (Vec<String>, Vec<String>, String) {
+    let n = mentioned.len();
+    let rows = 1usize << n;
+
+    // Full truth table over mentioned vars; mentioned[0] is the MSB.
+    let mut outputs = vec![false; rows];
+    for (mask, out) in outputs.iter_mut().enumerate() {
+        let mut true_vars = HashSet::new();
+        for (i, name) in mentioned.iter().enumerate() {
+            if (mask >> (n - 1 - i)) & 1 == 1 {
+                true_vars.insert(name.clone());
+            }
+        }
+        *out = expr.eval(&true_vars);
+    }
+
+    // Support: a var is kept iff flipping only it changes the output somewhere.
+    let mut in_support = vec![false; n];
+    for (j, sup) in in_support.iter_mut().enumerate() {
+        let jbit = n - 1 - j;
+        for mask in 0..rows {
+            if (mask >> jbit) & 1 == 0 && outputs[mask] != outputs[mask | (1 << jbit)] {
+                *sup = true;
+                break;
+            }
+        }
+    }
+    let support: Vec<String> = mentioned
+        .iter()
+        .zip(&in_support)
+        .filter(|(_, &keep)| keep)
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    if !outputs.iter().any(|&b| b) {
+        return (support, Vec::new(), "0".to_string());
+    }
+    if outputs.iter().all(|&b| b) {
+        return (support, Vec::new(), "1".to_string());
+    }
+
+    // One product term per ON row of the support-only truth table.
+    let k = support.len();
+    let support_bits: Vec<usize> = support
+        .iter()
+        .map(|name| n - 1 - mentioned.iter().position(|m| m == name).unwrap())
+        .collect();
+    let mut parts: Vec<String> = Vec::new();
+    for srow in 0..(1usize << k) {
+        let mut mask = 0usize;
+        for (s, &bitpos) in support_bits.iter().enumerate() {
+            if (srow >> (k - 1 - s)) & 1 == 1 {
+                mask |= 1 << bitpos;
+            }
+        }
+        if !outputs[mask] {
+            continue;
+        }
+        let lits: Vec<(String, bool)> = support
+            .iter()
+            .enumerate()
+            .map(|(s, name)| (name.clone(), (srow >> (k - 1 - s)) & 1 == 0))
+            .collect();
+        parts.push(render_term(lits));
+    }
+    parts.sort();
+    let canonical = parts.join(" + ");
+    (support, parts, canonical)
+}
+
+/// Convert our `BoolExpr` into the minimizer crate's `Bool`, mapping variable
+/// names to indices by their position in `mentioned` (XOR is expanded since the
+/// crate has no XOR node).
+fn boolexpr_to_qmc(expr: &BoolExpr, mentioned: &[String]) -> quine_mc_cluskey::Bool {
+    use quine_mc_cluskey::Bool;
+    match expr {
+        BoolExpr::Const(true) => Bool::True,
+        BoolExpr::Const(false) => Bool::False,
+        BoolExpr::Var(name) => Bool::Term(mentioned.iter().position(|m| m == name).unwrap() as u8),
+        BoolExpr::Not(e) => Bool::Not(Box::new(boolexpr_to_qmc(e, mentioned))),
+        BoolExpr::And(l, r) => Bool::And(vec![
+            boolexpr_to_qmc(l, mentioned),
+            boolexpr_to_qmc(r, mentioned),
+        ]),
+        BoolExpr::Or(l, r) => Bool::Or(vec![
+            boolexpr_to_qmc(l, mentioned),
+            boolexpr_to_qmc(r, mentioned),
+        ]),
+        BoolExpr::Xor(l, r) => Bool::Or(vec![
+            Bool::And(vec![
+                boolexpr_to_qmc(l, mentioned),
+                Bool::Not(Box::new(boolexpr_to_qmc(r, mentioned))),
+            ]),
+            Bool::And(vec![
+                Bool::Not(Box::new(boolexpr_to_qmc(l, mentioned))),
+                boolexpr_to_qmc(r, mentioned),
+            ]),
+        ]),
+    }
+}
+
+fn collect_qmc_literals(
+    b: &quine_mc_cluskey::Bool,
+    mentioned: &[String],
+    out: &mut Vec<(String, bool)>,
+) {
+    use quine_mc_cluskey::Bool;
+    match b {
+        Bool::Term(i) => out.push((mentioned[*i as usize].clone(), false)),
+        Bool::Not(inner) => {
+            if let Bool::Term(i) = inner.as_ref() {
+                out.push((mentioned[*i as usize].clone(), true));
+            }
+        }
+        Bool::And(items) => items
+            .iter()
+            .for_each(|it| collect_qmc_literals(it, mentioned, out)),
+        _ => {}
+    }
+}
+
+fn render_qmc_sop(b: &quine_mc_cluskey::Bool, mentioned: &[String]) -> String {
+    use quine_mc_cluskey::Bool;
+    match b {
+        Bool::True => "1".to_string(),
+        Bool::False => "0".to_string(),
+        Bool::Or(terms) => {
+            let mut parts: Vec<String> = terms
+                .iter()
+                .map(|t| {
+                    let mut lits = Vec::new();
+                    collect_qmc_literals(t, mentioned, &mut lits);
+                    render_term(lits)
+                })
+                .collect();
+            parts.sort();
+            parts.join(" + ")
+        }
+        other => {
+            let mut lits = Vec::new();
+            collect_qmc_literals(other, mentioned, &mut lits);
+            render_term(lits)
+        }
+    }
+}
+
+/// Minimized sum-of-products (Quine-McCluskey). `simplify()` can return several
+/// equally-minimal covers; render each and pick the lexicographically smallest
+/// so the result is deterministic. Constants short-circuit via `canonical`.
+fn minimized_sop(expr: &BoolExpr, mentioned: &[String], canonical: &str) -> String {
+    if canonical == "0" || canonical == "1" {
+        return canonical.to_string();
+    }
+    let mut rendered: Vec<String> = boolexpr_to_qmc(expr, mentioned)
+        .simplify()
+        .iter()
+        .map(|sol| render_qmc_sop(sol, mentioned))
+        .collect();
+    rendered.sort();
+    rendered
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| canonical.to_string())
+}
+
+/// A parsed Liberty boolean expression. `__str__` is a minimized sum-of-products
+/// (compact, human-readable); equality/hashing use the canonical sum-of-minterms
+/// over the support, so `==` is true exactly when two expressions are logically
+/// equivalent.
+#[pyclass]
+#[derive(Clone)]
+struct BooleanExpression {
+    source: String,
+    expr: BoolExpr,
+    support: Vec<String>,
+    minterm_parts: Vec<String>,
+    canonical: String,
+    minimized: String,
+}
+
+impl BooleanExpression {
+    /// Parse `source` and precompute the canonical + minimized forms. Shared by
+    /// the Python constructor and every `*_expr` accessor.
+    fn build(source: &str) -> PyResult<Self> {
+        let expr = parse_bool_expr(source).map_err(|e| {
+            PyValueError::new_err(format!("invalid boolean expression {source:?}: {e}"))
+        })?;
+        let mut mentioned = Vec::new();
+        expr.collect_vars(&mut mentioned);
+        mentioned.sort();
+        if mentioned.len() > BOOL_VAR_CAP {
+            return Err(PyValueError::new_err(format!(
+                "boolean expression mentions {} variables (cap {BOOL_VAR_CAP}); \
+                 refusing to enumerate 2^{} rows",
+                mentioned.len(),
+                mentioned.len()
+            )));
+        }
+        let (support, minterm_parts, canonical) = canonical_minterm_parts(&expr, &mentioned);
+        let minimized = minimized_sop(&expr, &mentioned, &canonical);
+        Ok(Self {
+            source: source.to_string(),
+            expr,
+            support,
+            minterm_parts,
+            canonical,
+            minimized,
+        })
+    }
+}
+
+/// Parse an optional raw boolean field into a `BooleanExpression`, propagating a
+/// parse error as `PyValueError`. Used by the `*_expr` accessors.
+fn expr_of(field: &Option<String>) -> PyResult<Option<BooleanExpression>> {
+    field.as_deref().map(BooleanExpression::build).transpose()
+}
+
+#[pymethods]
+impl BooleanExpression {
+    #[new]
+    fn new(source: &str) -> PyResult<Self> {
+        Self::build(source)
+    }
+
+    fn __str__(&self) -> String {
+        self.minimized.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BooleanExpression('{}')",
+            self.source.replace('\\', "\\\\").replace('\'', "\\'")
+        )
+    }
+
+    fn __eq__(&self, other: &BooleanExpression) -> bool {
+        self.canonical == other.canonical
+    }
+
+    fn __hash__(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.canonical.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// The original (verbatim) expression text.
+    #[getter]
+    fn source(&self) -> String {
+        self.source.clone()
+    }
+
+    /// Alias of `source`.
+    #[getter]
+    fn raw(&self) -> String {
+        self.source.clone()
+    }
+
+    /// Support variables (those the function actually depends on), sorted.
+    #[getter]
+    fn variables(&self) -> Vec<String> {
+        self.support.clone()
+    }
+
+    /// Canonical product terms (sum-of-minterms over the support).
+    fn minterms(&self) -> Vec<String> {
+        self.minterm_parts.clone()
+    }
+
+    /// The canonical sum-of-minterms string that backs equality/hashing.
+    fn canonical(&self) -> String {
+        self.canonical.clone()
+    }
+
+    /// The minimized sum-of-products string (same as `str(self)`).
+    fn minimized(&self) -> String {
+        self.minimized.clone()
+    }
+
+    /// Evaluate under a `{var: bool}` mapping and/or keyword args. Variables not
+    /// given default to false; unknown variables are ignored.
+    #[pyo3(signature = (mapping=None, **kwargs))]
+    fn eval(
+        &self,
+        mapping: Option<&Bound<'_, PyDict>>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<bool> {
+        let mut true_vars = HashSet::new();
+        for dict in [mapping, kwargs].into_iter().flatten() {
+            for (key, value) in dict.iter() {
+                if value.extract::<bool>()? {
+                    true_vars.insert(key.extract::<String>()?);
+                }
+            }
+        }
+        Ok(self.expr.eval(&true_vars))
+    }
+
+    /// True if `self` logically implies `other` (every ON-set assignment of
+    /// `self` is in the ON-set of `other`).
+    fn implies(&self, other: &BooleanExpression) -> bool {
+        bool_implies(&self.expr, &other.expr)
     }
 }
 
@@ -2098,6 +2668,8 @@ impl Parser {
         let mut bundles = Vec::new();
         let mut attributes = Vec::new();
         let mut dynamic_currents = Vec::new();
+        let mut ff = None;
+        let mut latch = None;
         while !self.consume_symbol(b'}')? {
             let item_name = self.take_word()?;
             if self.consume_symbol(b'(')? {
@@ -2121,6 +2693,16 @@ impl Parser {
                         }
                         "dynamic_current" => {
                             dynamic_currents.push(self.parse_dynamic_current_body()?);
+                        }
+                        // `ff_bank`/`latch_bank` reuse the same parser; the extra
+                        // bit-width arg is ignored. `statetable` is a tabular
+                        // state-transition group, not a boolean expression, so
+                        // it stays skipped.
+                        "ff" | "ff_bank" => {
+                            ff = Some(self.parse_ff_body(&args)?);
+                        }
+                        "latch" | "latch_bank" => {
+                            latch = Some(self.parse_latch_body(&args)?);
                         }
                         _ => {
                             self.skip_group_body()?;
@@ -2149,7 +2731,74 @@ impl Parser {
             bundles,
             attributes,
             dynamic_currents,
+            ff,
+            latch,
         })
+    }
+
+    /// Parse an `ff` / `ff_bank` body. `args` are the header arguments; the
+    /// first two are the state-variable names.
+    fn parse_ff_body(&mut self, args: &[String]) -> Result<FfData, ParseError> {
+        let mut ff = FfData {
+            variable1: args.first().cloned(),
+            variable2: args.get(1).cloned(),
+            ..FfData::default()
+        };
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b'(')? {
+                let _args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    self.skip_group_body()?;
+                }
+                self.consume_symbol(b';')?;
+            } else if self.consume_symbol(b':')? {
+                let value = self.read_simple_attribute_value()?;
+                match item_name.as_str() {
+                    "next_state" => ff.next_state = Some(value),
+                    "clocked_on" => ff.clocked_on = Some(value),
+                    "clocked_on_also" => ff.clocked_on_also = Some(value),
+                    "clear" => ff.clear = Some(value),
+                    "preset" => ff.preset = Some(value),
+                    "power_down_function" => ff.power_down_function = Some(value),
+                    _ => {}
+                }
+            } else {
+                return Err(self.error_here("expected '(' or ':' in ff group"));
+            }
+        }
+        Ok(ff)
+    }
+
+    /// Parse a `latch` / `latch_bank` body.
+    fn parse_latch_body(&mut self, args: &[String]) -> Result<LatchData, ParseError> {
+        let mut latch = LatchData {
+            variable1: args.first().cloned(),
+            variable2: args.get(1).cloned(),
+            ..LatchData::default()
+        };
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b'(')? {
+                let _args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    self.skip_group_body()?;
+                }
+                self.consume_symbol(b';')?;
+            } else if self.consume_symbol(b':')? {
+                let value = self.read_simple_attribute_value()?;
+                match item_name.as_str() {
+                    "enable" => latch.enable = Some(value),
+                    "data_in" => latch.data_in = Some(value),
+                    "clear" => latch.clear = Some(value),
+                    "preset" => latch.preset = Some(value),
+                    _ => {}
+                }
+            } else {
+                return Err(self.error_here("expected '(' or ':' in latch group"));
+            }
+        }
+        Ok(latch)
     }
 
     fn parse_dynamic_current_body(&mut self) -> Result<DynamicCurrentData, ParseError> {
@@ -2265,6 +2914,8 @@ impl Parser {
     fn parse_pin_body(&mut self, name: String) -> Result<PinData, ParseError> {
         let mut direction = None;
         let mut function = None;
+        let mut three_state = None;
+        let mut power_down_function = None;
         let mut timing_arcs = Vec::new();
         let mut internal_powers = Vec::new();
         let mut attributes = Vec::new();
@@ -2289,6 +2940,8 @@ impl Parser {
                 match item_name.as_str() {
                     "direction" => direction = Some(value.clone()),
                     "function" => function = Some(value.clone()),
+                    "three_state" => three_state = Some(value.clone()),
+                    "power_down_function" => power_down_function = Some(value.clone()),
                     _ => {}
                 }
                 attributes.push((item_name, value));
@@ -2300,6 +2953,8 @@ impl Parser {
             name,
             direction,
             function,
+            three_state,
+            power_down_function,
             timing_arcs,
             internal_powers,
             attributes,
@@ -2377,6 +3032,8 @@ impl Parser {
                             name,
                             direction: direction.clone(),
                             function: None,
+                            three_state: None,
+                            power_down_function: None,
                             timing_arcs: Vec::new(),
                             internal_powers: Vec::new(),
                             attributes: Vec::new(),
@@ -2509,6 +3166,7 @@ impl Parser {
         let mut related_pin = None;
         let mut timing_type = None;
         let mut when = None;
+        let mut sdf_cond = None;
         let mut tables = Vec::new();
         while !self.consume_symbol(b'}')? {
             let item_name = self.take_word()?;
@@ -2531,6 +3189,7 @@ impl Parser {
                     "related_pin" => related_pin = Some(value),
                     "timing_type" => timing_type = Some(value),
                     "when" => when = Some(value),
+                    "sdf_cond" => sdf_cond = Some(value),
                     _ => {}
                 }
             } else {
@@ -2541,6 +3200,7 @@ impl Parser {
             related_pin,
             timing_type,
             when,
+            sdf_cond,
             tables,
         })
     }

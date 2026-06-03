@@ -6,9 +6,10 @@ install them normally with `uv` or `pip`.
 
 ## Vendored Rust crates
 
-`vendor/cargo/` holds every crate the extension needs (pyo3, flate2/zlib-rs, and
-their transitive deps). `.cargo/config.toml` redirects crates.io to that
-directory, so `cargo` / `maturin` never reach the network for crates.
+`vendor/cargo/` holds every crate the extension needs (pyo3, flate2/zlib-rs,
+quine-mc_cluskey for boolean minimization, and their transitive deps).
+`.cargo/config.toml` redirects crates.io to that directory, so `cargo` /
+`maturin` never reach the network for crates.
 
 Regenerate after changing `Cargo.toml`:
 
