@@ -571,12 +571,38 @@ async function dumpDebug() {
   }
 }
 
+// Re-exec the server, wait for it to come back, then reload the page — picks up
+// rebuilt native code / edited Python without a manual restart.
+async function devRestart() {
+  const status = document.getElementById("dump-status");
+  status.textContent = "restarting…";
+  try {
+    await fetch("/api/restart", { method: "POST" });
+  } catch {
+    /* connection drops as the process re-execs — expected */
+  }
+  for (let i = 0; i < 100; i++) {
+    await new Promise((r) => setTimeout(r, 300));
+    try {
+      const res = await fetch("/api/config", { cache: "no-store" });
+      if (res.ok) {
+        location.reload();
+        return;
+      }
+    } catch {
+      /* not back yet */
+    }
+  }
+  status.textContent = "restart: server did not come back";
+}
+
 async function initDevBar() {
   try {
     const cfg = await api("/api/config");
     if (!cfg.dev) return;
     document.getElementById("devbar").classList.remove("hidden");
     document.getElementById("dump-debug").addEventListener("click", dumpDebug);
+    document.getElementById("dev-reload").addEventListener("click", devRestart);
   } catch (e) {
     console.error(e);
   }

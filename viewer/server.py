@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import signal
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -162,6 +163,24 @@ async def bye():
 def config():
     """Client boot config. ``dev`` toggles the in-page Dump Debug button."""
     return {"dev": _dev_enabled()}
+
+
+def _reexec() -> None:
+    # Replace this process with a fresh `python -m viewer <same args>`, so a
+    # rebuilt native extension / edited Python is picked up. Listening sockets
+    # are non-inheritable (PEP 446) and close here, freeing the port to re-bind.
+    os.execv(sys.executable, [sys.executable, "-m", "viewer", *sys.argv[1:]])
+
+
+@app.post("/api/restart")
+async def restart():
+    """Dev-only: re-exec the server so updated code takes effect. The client
+    polls until it's back, then reloads the page."""
+    if not _dev_enabled():
+        raise HTTPException(404, "restart disabled (run with --dev)")
+    # Re-exec after the response is flushed (replacing the process never returns).
+    asyncio.get_running_loop().call_later(0.25, _reexec)
+    return {"ok": True}
 
 
 @app.post("/api/debug")

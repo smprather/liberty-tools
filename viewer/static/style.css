@@ -78,6 +78,17 @@ ul.tree { padding-left: 0; }
   font-weight: 600;
 }
 #dump-debug:hover { filter: brightness(1.1); }
+#dev-reload {
+  font: inherit;
+  color: #11131a;
+  background: var(--accent);
+  border: none;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+}
+#dev-reload:hover { filter: brightness(1.1); }
 #dump-status { font-size: 11px; }
 #crumb { margin-bottom: 8px; }
 #view { min-height: 200px; }
