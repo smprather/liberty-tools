@@ -82,19 +82,31 @@ function cellNode(name) {
   const kids = document.createElement("ul");
   kids.className = "tree hidden";
   let cellData = null;
-  row.onclick = async () => {
-    const open = !kids.classList.toggle("hidden");
-    row.querySelector(".toggle").textContent = open ? "▾" : "▸";
-    if (open && !cellData) {
+  let built = false;
+  const toggleEl = row.querySelector(".toggle");
+  async function ensure() {
+    if (!cellData) {
       cellData = await api(`/api/cells/${encodeURIComponent(name)}`);
       debugState.openCells[name] = cellData;
-      for (const child of cellData.children || []) kids.appendChild(treeNode(child, name));
     }
-    if (open && cellData) {
-      selectRow(li);
-      renderAttrs(cellData);
-      showSource(name, { kind: "cell", name });
+    return cellData;
+  }
+  // Arrow marker toggles expand/collapse; the rest of the row only selects.
+  toggleEl.onclick = async (e) => {
+    e.stopPropagation();
+    const open = !kids.classList.toggle("hidden");
+    toggleEl.textContent = open ? "▾" : "▸";
+    if (open && !built) {
+      built = true;
+      for (const child of (await ensure()).children || []) {
+        kids.appendChild(treeNode(child, name));
+      }
     }
+  };
+  row.onclick = async () => {
+    selectRow(li);
+    renderAttrs(await ensure());
+    showSource(name, { kind: "cell", name });
   };
   li.appendChild(row);
   li.appendChild(kids);
@@ -138,26 +150,28 @@ function treeNode(node, cellName) {
 
   let kids = null;
   let built = false;
+  const toggleEl = row.querySelector(".toggle");
   if (hasKids) {
     kids = document.createElement("ul");
     kids.className = "tree hidden";
-  }
-  row.onclick = () => {
-    if (hasKids) {
+    // Arrow marker toggles expand/collapse; clicking the rest of the row only
+    // selects (so navigating long trees doesn't fold things by accident).
+    toggleEl.onclick = (e) => {
+      e.stopPropagation();
       const open = !kids.classList.toggle("hidden");
-      row.querySelector(".toggle").textContent = open ? "▾" : "▸";
+      toggleEl.textContent = open ? "▾" : "▸";
       if (open && !built) {
         built = true;
         for (const child of node.children) kids.appendChild(treeNode(child, cellName));
       }
-    }
-    // A node carries its own scalar attributes (pin caps, cell area, arc meta,
-    // …) — show them in the main view, not just expand.
-    if (node.attributes && node.attributes.length) {
-      selectRow(li);
-      renderAttrs(node);
-      showSource(cellName, node.src);
-    }
+    };
+  }
+  row.onclick = () => {
+    selectRow(li);
+    // A node carries its own scalar attributes (pin caps, arc meta, …) — show
+    // them in the main view.
+    if (node.attributes && node.attributes.length) renderAttrs(node);
+    showSource(cellName, node.src);
   };
   li.appendChild(row);
   if (kids) li.appendChild(kids);

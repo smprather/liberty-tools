@@ -474,12 +474,10 @@ class LibertyData:
         # Lone group: flat node with the pg pin in the label (unchanged layout).
         if len(members) == 1:
             idx, grp = members[0]
-            sub = []
-            if grp.related_pin:
-                sub.append(grp.related_pin)
+            arrow = f"{grp.related_pin}→{pin.name}" if grp.related_pin else pin.name
+            label = f"internal_power {arrow}"
             if grp.related_pg_pin:
-                sub.append(f"pg={grp.related_pg_pin}")
-            label = "internal_power" + (f" [{', '.join(sub)}]" if sub else "")
+                label += f" pg={grp.related_pg_pin}"
             pid = f"{container}|pin:{pin.name}|power:{idx}"
             meta = {
                 "related_pin": grp.related_pin,
@@ -511,7 +509,8 @@ class LibertyData:
                     "children": tables_for(idx, grp),
                 }
             )
-        label = "internal_power" + (f" [{related_pin}]" if related_pin else "")
+        arrow = f"{related_pin}→{pin.name}" if related_pin else pin.name
+        label = f"internal_power {arrow}"
         meta = {"related_pin": related_pin, "when": when}
         return {
             "id": gid,

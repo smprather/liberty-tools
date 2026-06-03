@@ -61,8 +61,16 @@ ul.tree { padding-left: 0; }
 .node.leakage > .row { color: #d98a8a; }
 .node.table > .row { color: var(--leaf); }
 .node.selected > .row { background: #34405a; }
-.toggle { display: inline-block; width: 12px; color: var(--muted); }
-.leaf .toggle { visibility: hidden; }
+.toggle {
+  display: inline-block;
+  width: 16px;
+  text-align: center;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.toggle:hover { color: var(--fg); background: #3a3a44; }
+.leaf .toggle { visibility: hidden; cursor: default; }
 .meta-inline { color: var(--muted); font-size: 11px; }
 
 #main { flex: 1; overflow: auto; padding: 12px 16px; }
