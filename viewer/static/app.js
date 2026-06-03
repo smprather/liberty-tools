@@ -492,8 +492,9 @@ function renderHeatmap(view, data, ref) {
       // don't render as a cliff regardless of the data's value range.
       aspectmode: "manual",
       aspectratio: { x: 1, y: 1, z: 0.5 },
-      xaxis: { title: L.index_2 },
-      yaxis: { title: L.index_1 },
+      // All three axes start at 0 so x/y share the same origin corner.
+      xaxis: { title: L.index_2, range: [0, Math.max(...data.index_2)] },
+      yaxis: { title: L.index_1, range: [0, Math.max(...data.index_1)] },
       zaxis: { title: L.value, range: [0, zmax] },
     },
   }, { responsive: true });
