@@ -111,7 +111,7 @@ function cellNode(name) {
   row.onclick = async () => {
     selectRow(li);
     renderAttrs(await ensure());
-    showSource(name, { kind: "cell", name });
+    showSource(name, { kind: "path", path: [], label: `${name} · cell` });
   };
   li.appendChild(row);
   li.appendChild(kids);
@@ -608,6 +608,22 @@ function _sliceGroupOccurrences(text, kind, indices) {
   return out.length ? out.join("\n") : null;
 }
 
+// Walk a source path (steps from the cell down) and return the deepest text we
+// can reach: each step slices a named `group (name)` or the indexed occurrences
+// of `group (...)`. Stops at the last level that resolves (best effort).
+function _walkPath(cellText, path) {
+  let cur = cellText;
+  for (const step of path) {
+    const nxt =
+      step.name != null
+        ? _sliceGroup(cur, step.group, step.name)
+        : _sliceGroupOccurrences(cur, step.group, step.indices);
+    if (nxt == null) break;
+    cur = nxt;
+  }
+  return cur;
+}
+
 async function showSource(cell, src) {
   src = src || { kind: "cell", name: cell };
   const sec = document.getElementById("source-section");
@@ -624,30 +640,11 @@ async function showSource(cell, src) {
     }
   }
   const d = _sourceCache[cell];
-  let text = d.text;
-  let label = `${cell} · cell`;
-  if (src.kind === "group") {
-    // Exact sub-group: slice the container, then the listed group occurrences.
-    const c = src.container;
-    const container = c.kind === "cell" ? d.text : _sliceGroup(d.text, c.kind, c.name);
-    const slice = container && _sliceGroupOccurrences(container, src.group, src.indices);
-    if (slice) {
-      text = slice;
-      const n = src.indices.length;
-      label = `${c.name} · ${src.group}${n > 1 ? ` ×${n}` : ""}`;
-    } else if (container) {
-      text = container;
-      label = `${c.name} · ${c.kind}`;
-    }
-  } else if (src.kind !== "cell") {
-    const slice = _sliceGroup(d.text, src.kind, src.name);
-    if (slice !== null) {
-      text = slice;
-      label = `${src.name} · ${src.kind}`;
-    }
-  }
+  const path = (src && src.path) || [];
+  const text = _walkPath(d.text, path);
+  const label = (src && src.label) || `${cell} · cell`;
   const lines = text.split("\n").length;
-  const trunc = src.kind === "cell" && d.truncated ? ", truncated" : "";
+  const trunc = path.length === 0 && d.truncated ? ", truncated" : "";
   title.textContent = `source: ${label} (${lines.toLocaleString()} lines${trunc})`;
   pre.textContent = text;
 }

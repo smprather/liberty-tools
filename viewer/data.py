@@ -102,21 +102,21 @@ def _fmt_attr_rows(rows: list[tuple[str, str]]) -> list[list[str]]:
     return [[k, _fmt_bool(v) if k in _BOOL_ATTRS else v] for k, v in rows]
 
 
-def _group_src(container_kind: str, owner: str, group: str, indices: list[int]) -> dict[str, Any]:
-    """Source locator for an anonymous sub-group: the `indices`-th `group (...)`
-    block(s) inside the named `container` (e.g. the 0th `timing` group of pin Y).
-    Lets the client trim the source pane to exactly the selected line item."""
-    return {
-        "kind": "group",
-        "container": {"kind": container_kind, "name": owner},
-        "group": group,
-        "indices": indices,
-    }
+def _step(group: str, name: str | None = None, indices: list[int] | None = None) -> dict[str, Any]:
+    """One step of a source path: a `group (...)` block matched by paren `name`
+    (e.g. `pin (Y)`) or by `indices`-th occurrence (e.g. the 0th `timing`)."""
+    return {"group": group, "name": name} if name is not None else {"group": group, "indices": indices}
 
 
-def _propagate_src(node: dict[str, Any], parent_src: dict[str, str]) -> None:
-    """Stamp every node with a source scope (cell/pin/bus/bundle group): nodes
-    that don't define their own inherit the nearest named ancestor's."""
+def _path_src(steps: list[dict[str, Any]], label: str) -> dict[str, Any]:
+    """Source locator: a path of nested groups walked from the cell text down, so
+    the source pane trims to exactly the selected line item (down to one table)."""
+    return {"kind": "path", "path": steps, "label": label}
+
+
+def _propagate_src(node: dict[str, Any], parent_src: dict[str, Any]) -> None:
+    """Stamp every node with a source path: nodes that don't define their own
+    inherit the nearest ancestor that does."""
     src = node.get("src") or parent_src
     node["src"] = src
     for child in node.get("children", []):
@@ -300,7 +300,7 @@ class LibertyData:
             "type": "cell",
             "meta": {"area": cell.area},
             "attributes": _fmt_attr_rows(cell.attributes()),
-            "src": {"kind": "cell", "name": cell_name},
+            "src": _path_src([], f"{cell_name} · cell"),
             "children": [],
         }
         for pin_name in cell.pins():
@@ -313,7 +313,7 @@ class LibertyData:
                 "type": "bus",
                 "meta": {"direction": bus.direction, "bus_type": bus.bus_type},
                 "attributes": _meta_attrs({"direction": bus.direction, "bus_type": bus.bus_type}),
-                "src": {"kind": "bus", "name": bus_name},
+                "src": _path_src([_step("bus", name=bus_name)], f"{bus_name} · bus"),
                 "children": self._arc_nodes(list(bus.timing_arcs()), "bus", bus_name, ""),
             }
             for pin_name in bus.pins():
@@ -329,7 +329,7 @@ class LibertyData:
                 "attributes": _meta_attrs(
                     {"direction": bundle.direction, "members": ", ".join(bundle.members)}
                 ),
-                "src": {"kind": "bundle", "name": bundle_name},
+                "src": _path_src([_step("bundle", name=bundle_name)], f"{bundle_name} · bundle"),
                 "children": self._arc_nodes(list(bundle.timing_arcs()), "bundle", bundle_name, ""),
             }
             for pin_name in bundle.pins():
@@ -447,7 +447,7 @@ class LibertyData:
             "type": "pin",
             "meta": {"direction": pin.direction, "function": _fmt_bool(pin.function)},
             "attributes": _fmt_attr_rows(pin.attributes()),
-            "src": {"kind": "pin", "name": pin.name},
+            "src": _path_src([_step("pin", name=pin.name)], f"{pin.name} · pin"),
             "children": children,
         }
 
@@ -476,10 +476,12 @@ class LibertyData:
     ) -> dict[str, Any]:
         first = members[0][1]
         related_pin, when = first.related_pin, first.when
+        pin_step = _step("pin", name=pin.name)
 
         def tables_for(idx: int, grp: lt.InternalPower) -> list[dict[str, Any]]:
+            prefix = [pin_step, _step("internal_power", indices=[idx])]
             return [
-                self._table_leaf(container, pin.name, "power", idx, t)
+                self._table_leaf(container, pin.name, "power", idx, t, prefix)
                 for t in grp.tables()
             ]
 
@@ -502,7 +504,10 @@ class LibertyData:
                 "type": "powergrp",
                 "meta": meta,
                 "attributes": _meta_attrs(meta),
-                "src": _group_src("pin", pin.name, "internal_power", [idx]),
+                "src": _path_src(
+                    [pin_step, _step("internal_power", indices=[idx])],
+                    f"{pin.name} · internal_power",
+                ),
                 "children": self._wrap_when(grp.when, pid, tables_for(idx, grp)),
             }
 
@@ -519,7 +524,10 @@ class LibertyData:
                     "type": "pgpin",
                     "meta": {"related_pg_pin": grp.related_pg_pin},
                     "attributes": _meta_attrs({"related_pg_pin": grp.related_pg_pin}),
-                    "src": _group_src("pin", pin.name, "internal_power", [idx]),
+                    "src": _path_src(
+                        [pin_step, _step("internal_power", indices=[idx])],
+                        f"{pin.name} · internal_power",
+                    ),
                     "children": tables_for(idx, grp),
                 }
             )
@@ -532,6 +540,10 @@ class LibertyData:
             "type": "powergrp",
             "meta": meta,
             "attributes": _meta_attrs(meta),
+            "src": _path_src(
+                [pin_step, _step("internal_power", indices=[i for i, _ in members])],
+                f"{pin.name} · internal_power",
+            ),
             "children": self._wrap_when(when, gid, pg_nodes),
         }
 
@@ -568,9 +580,11 @@ class LibertyData:
         label = "timing " + " ".join(parts)
         # For bus/bundle direct arcs, the "pin" used by /api/table is the owner name.
         base = container if scope == "pin" else f"{scope}:{owner}"
+        owner_step = _step(scope, name=owner)
 
         def tables_for(idx: int, arc: lt.TimingArc) -> list[dict[str, Any]]:
-            return [self._table_leaf(base, owner, "timing", idx, t) for t in arc.tables()]
+            prefix = [owner_step, _step("timing", indices=[idx])]
+            return [self._table_leaf(base, owner, "timing", idx, t, prefix) for t in arc.tables()]
 
         # Lone unconditional arc: tables hang straight off the arc node.
         if len(members) == 1 and not first.when:
@@ -584,7 +598,7 @@ class LibertyData:
                 "attributes": _meta_attrs(
                     {"related_pin": first.related_pin, "timing_type": first.timing_type}
                 ),
-                "src": _group_src(scope, owner, "timing", [idx]),
+                "src": _path_src([owner_step, _step("timing", indices=[idx])], f"{owner} · timing"),
                 "children": tables_for(idx, arc),
             }
 
@@ -605,7 +619,9 @@ class LibertyData:
                             "timing_type": arc.timing_type,
                         }
                     ),
-                    "src": _group_src(scope, owner, "timing", [idx]),
+                    "src": _path_src(
+                        [owner_step, _step("timing", indices=[idx])], f"{owner} · timing"
+                    ),
                     "children": tables_for(idx, arc),
                 }
             )
@@ -617,14 +633,23 @@ class LibertyData:
             "attributes": _meta_attrs(
                 {"related_pin": first.related_pin, "timing_type": first.timing_type}
             ),
-            "src": _group_src(scope, owner, "timing", [i for i, _ in members]),
+            "src": _path_src(
+                [owner_step, _step("timing", indices=[i for i, _ in members])],
+                f"{owner} · timing",
+            ),
             "children": when_children,
         }
 
     def _table_leaf(
-        self, container: str, pin: str, group: str, arc_index: int, table: str
+        self,
+        container: str,
+        pin: str,
+        group: str,
+        arc_index: int,
+        table: str,
+        src_prefix: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        return {
+        leaf: dict[str, Any] = {
             "id": f"{container}|pin:{pin}|{group}:{arc_index}|table:{table}",
             "label": table,
             "type": "table",
@@ -637,6 +662,11 @@ class LibertyData:
                 "table": table,
             },
         }
+        # `src_prefix` locates the enclosing timing()/internal_power() group; the
+        # table itself is that group's `<table> (...)` block. None -> inherit.
+        if src_prefix is not None:
+            leaf["src"] = _path_src(src_prefix + [_step(table, indices=[0])], f"{table} · table")
+        return leaf
 
     # -- resolve one table leaf to axes + values -------------------------------
     def table(
