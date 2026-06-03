@@ -85,6 +85,7 @@ function cellNode(name) {
     if (open && cellData) {
       selectRow(li);
       renderAttrs(cellData);
+      showSource(name);
     }
   };
   li.appendChild(row);
@@ -111,6 +112,7 @@ function treeNode(node, cellName) {
     row.onclick = () => {
       selectRow(li);
       loadTable(cellName, node.ref);
+      showSource(cellName);
     };
     li.appendChild(row);
     return li;
@@ -136,6 +138,7 @@ function treeNode(node, cellName) {
     if (node.attributes && node.attributes.length) {
       selectRow(li);
       renderAttrs(node);
+      showSource(cellName);
     }
   };
   li.appendChild(row);
@@ -470,6 +473,31 @@ function showWave(data, i, j) {
 
 function hideWave() {
   document.getElementById("wave-section").classList.add("hidden");
+}
+
+// ---- raw cell source (bottom pane) -----------------------------------------
+// One byte-slice per cell from the server's in-memory buffer; cached per cell so
+// re-selecting within a cell never refetches. Cost is O(cell size), so this
+// stays snappy on multi-GB libraries.
+const _sourceCache = {};
+async function showSource(cell) {
+  const sec = document.getElementById("source-section");
+  const title = document.getElementById("source-title");
+  const pre = document.getElementById("source");
+  sec.classList.remove("hidden");
+  if (_sourceCache[cell] === undefined) {
+    try {
+      _sourceCache[cell] = await api(`/api/cells/${encodeURIComponent(cell)}/source`);
+    } catch (e) {
+      title.textContent = `source: ${cell} — error: ${e.message}`;
+      pre.textContent = "";
+      return;
+    }
+  }
+  const d = _sourceCache[cell];
+  title.textContent =
+    `source: ${cell} (${d.length.toLocaleString()} chars${d.truncated ? ", truncated" : ""})`;
+  pre.textContent = d.text;
 }
 
 // ---- debug dump (only when the server runs with --dev) ---------------------

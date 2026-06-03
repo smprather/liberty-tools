@@ -2228,6 +2228,16 @@ impl LibraryIndex {
             .ok_or_else(|| PyValueError::new_err(format!("failed to parse cell {name:?}")))
     }
 
+    /// Raw Liberty source text of one cell, sliced from the in-memory buffer.
+    /// O(cell size) — independent of the total file size.
+    fn cell_source(&self, name: &str) -> PyResult<String> {
+        let &(start, end) = self
+            .ranges
+            .get(name)
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown cell {name:?}")))?;
+        Ok(String::from_utf8_lossy(&self.data[start..end]).into_owned())
+    }
+
     // -- library header pass-throughs (parsed once at open) --
     #[getter]
     fn voltage_unit(&self) -> Option<String> {

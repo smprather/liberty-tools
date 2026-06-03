@@ -736,6 +736,11 @@ class LibraryIndex:
     def cell(self, name: str) -> Cell:
         return Cell(self._native.cell(name))
 
+    def cell_source(self, name: str) -> str:
+        """Raw Liberty source text of one cell, sliced from the in-memory buffer
+        (O(cell size), independent of total file size)."""
+        return self._native.cell_source(name)
+
 
 def parse_file(path: str | Path, **filters: Any) -> LibertyDocument:
     return LibertyDocument(_native.parse_file(str(path), **filters))

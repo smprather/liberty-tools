@@ -73,6 +73,14 @@ def cell_tree(cell: str):
         raise HTTPException(404, f"unknown cell {cell!r}")
 
 
+@app.get("/api/cells/{cell}/source")
+def cell_source(cell: str):
+    try:
+        return get_data().cell_source(cell)
+    except (KeyError, ValueError):
+        raise HTTPException(404, f"unknown cell {cell!r}")
+
+
 @app.get("/api/table")
 def table(
     cell: str,

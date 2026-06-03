@@ -57,6 +57,7 @@ ul.tree { padding-left: 0; }
 .node.when > .row { color: #c792ea; }
 .node.dynamic > .row { color: #56b6c2; }
 .node.switchgroup > .row { color: #d19a66; }
+.node.pgpin > .row { color: #6fb3a0; }
 .node.table > .row { color: var(--leaf); }
 .node.selected > .row { background: #34405a; }
 .toggle { display: inline-block; width: 12px; color: var(--muted); }
@@ -125,4 +126,18 @@ table.grid td.num { padding: 3px 6px; text-align: right; color: var(--fg); white
 .dw-btn.active { background: var(--accent); color: #11131a; }
 .dw-table-scroll { overflow-x: auto; max-width: 100%; margin-top: 4px; }
 #wave-section { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+#source-section { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+#source-title { margin-bottom: 6px; }
+#source {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font: 11px/1.45 ui-monospace, monospace;
+  color: var(--fg);
+  white-space: pre;
+}
 h3.section { margin: 4px 0; font-size: 12px; color: var(--muted); font-weight: 600; }
