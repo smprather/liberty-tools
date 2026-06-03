@@ -74,8 +74,8 @@ ul.tree { padding-left: 0; }
 .leaf .toggle { visibility: hidden; cursor: default; }
 .meta-inline { color: var(--muted); font-size: 11px; }
 
-#main { flex: 1; overflow: auto; padding: 12px 16px; }
-#devbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+#main { flex: 1; overflow: auto; padding: 8px 16px; }
+#devbar { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 #dump-debug {
   font: inherit;
   color: #11131a;
@@ -99,8 +99,8 @@ ul.tree { padding-left: 0; }
 }
 #dev-reload:hover { filter: brightness(1.1); }
 #dump-status { font-size: 11px; }
-#crumb { margin-bottom: 8px; }
-#view { min-height: 200px; }
+#crumb { margin-bottom: 6px; }
+#view { min-height: 0; }
 table.scalar { border-collapse: collapse; }
 table.scalar td, table.scalar th {
   border: 1px solid var(--border);
@@ -147,8 +147,8 @@ table.grid td.num { padding: 3px 6px; text-align: right; color: var(--fg); white
 .dw-btn:hover { background: #3a3a44; }
 .dw-btn.active { background: var(--accent); color: #11131a; }
 .dw-table-scroll { overflow-x: auto; max-width: 100%; margin-top: 4px; }
-#wave-section { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
-#source-section { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+#wave-section { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+#source-section { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
 #source-title { margin-bottom: 6px; }
 #source-title:empty { display: none; }
 #source {
@@ -163,4 +163,4 @@ table.grid td.num { padding: 3px 6px; text-align: right; color: var(--fg); white
   color: var(--fg);
   white-space: pre;
 }
-h3.section { margin: 4px 0; font-size: 12px; color: var(--muted); font-weight: 600; }
+h3.section { margin: 2px 0; font-size: 12px; color: var(--muted); font-weight: 600; }

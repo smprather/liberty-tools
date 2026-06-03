@@ -4,8 +4,12 @@ const PLOT_LAYOUT = {
   paper_bgcolor: "#26262b",
   plot_bgcolor: "#1e1e22",
   font: { color: "#d6d6dc", family: "ui-monospace, monospace", size: 11 },
-  margin: { l: 60, r: 20, t: 30, b: 50 },
+  margin: { l: 55, r: 16, t: 18, b: 38 },
 };
+// Default 2D plot height — smaller than Plotly's 450 to cut vertical dead space.
+const PLOT_H = 320;
+// White grid/lines for the 3D scene axes.
+const GRID_WHITE = { gridcolor: "#ffffff", zerolinecolor: "#ffffff", linecolor: "#ffffff" };
 
 async function api(path) {
   const res = await fetch(path);
@@ -17,11 +21,19 @@ async function api(path) {
 // "Dump Debug" button (only present under `liberty_view --dev`).
 const debugState = { meta: null, openCells: {}, lastTable: null };
 
+// Full breadcrumb of the selection, "/"-joined (lib / cell / pin / arc / table),
+// so a screenshot carries the complete location without the tree.
+let LIB_NAME = "";
+function setCrumb(parts) {
+  document.getElementById("crumb").textContent = parts.filter(Boolean).join(" / ");
+}
+
 // ---- library meta + cell list ---------------------------------------------
 async function loadMeta() {
   const m = await api("/api/meta");
   const nameEl = document.getElementById("lib-name");
   debugState.meta = m;
+  LIB_NAME = m.library_name;
   nameEl.textContent = m.library_name;
   nameEl.classList.add("clickable");
   nameEl.onclick = () => {
@@ -29,6 +41,7 @@ async function loadMeta() {
       .querySelectorAll(".node.selected")
       .forEach((n) => n.classList.remove("selected"));
     renderLibrary(m);
+    setCrumb([LIB_NAME]);
   };
   const energy = energyLabel(m.energy_unit_joules);
   // Drop the leading magnitude ("1ps" -> "ps", "1mA" -> "mA").
@@ -99,7 +112,7 @@ function cellNode(name) {
     if (open && !built) {
       built = true;
       for (const child of (await ensure()).children || []) {
-        kids.appendChild(treeNode(child, name));
+        kids.appendChild(treeNode(child, name, [LIB_NAME, name]));
       }
     }
   };
@@ -112,13 +125,15 @@ function cellNode(name) {
     selectRow(li);
     renderAttrs(await ensure());
     showSource(name, { kind: "path", path: [], label: `${name} · cell` });
+    setCrumb([LIB_NAME, name]);
   };
   li.appendChild(row);
   li.appendChild(kids);
   return li;
 }
 
-function treeNode(node, cellName) {
+function treeNode(node, cellName, crumb) {
+  const trail = crumb.concat(node.label);
   const li = document.createElement("li");
   li.className = `node ${node.type}`;
   const row = document.createElement("div");
@@ -138,6 +153,7 @@ function treeNode(node, cellName) {
       selectRow(li);
       loadTable(cellName, node.ref);
       showSource(cellName, node.src);
+      setCrumb(trail);
     };
     li.appendChild(row);
     return li;
@@ -148,6 +164,7 @@ function treeNode(node, cellName) {
       selectRow(li);
       renderLeakage(node.leakage);
       showSource(cellName, node.src);
+      setCrumb(trail);
     };
     li.appendChild(row);
     return li;
@@ -167,7 +184,7 @@ function treeNode(node, cellName) {
       toggleEl.textContent = open ? "▾" : "▸";
       if (open && !built) {
         built = true;
-        for (const child of node.children) kids.appendChild(treeNode(child, cellName));
+        for (const child of node.children) kids.appendChild(treeNode(child, cellName, trail));
       }
     };
     toggleEl.onclick = (e) => {
@@ -182,6 +199,7 @@ function treeNode(node, cellName) {
     // them in the main view.
     if (node.attributes && node.attributes.length) renderAttrs(node);
     showSource(cellName, node.src);
+    setCrumb(trail);
   };
   li.appendChild(row);
   if (kids) li.appendChild(kids);
@@ -192,7 +210,6 @@ function renderAttrs(node) {
   const view = document.getElementById("view");
   view.innerHTML = "";
   hideWave();
-  document.getElementById("crumb").textContent = `${node.label} — attributes`;
   const attrs = node.attributes || [];
   if (!attrs.length) {
     view.innerHTML = '<div class="muted">no scalar attributes</div>';
@@ -211,7 +228,6 @@ function renderLeakage(d) {
   const view = document.getElementById("view");
   view.innerHTML = "";
   hideWave();
-  document.getElementById("crumb").textContent = "leakage_power · when × power";
   const cols = d.pg_pins;
   const t = document.createElement("table");
   t.className = "attrs";
@@ -322,8 +338,6 @@ async function loadTable(cell, ref) {
     table: ref.table,
     container: ref.container || "",
   });
-  document.getElementById("crumb").textContent =
-    `${cell} · ${ref.container ? ref.container + " · " : ""}${ref.pin} · ${ref.group} · ${ref.table}`;
   try {
     const data = await api(`/api/table?${params}`);
     debugState.lastTable = { cell, ref, data };
@@ -417,6 +431,7 @@ function showCcsWave(table, slew, cap, cell, L) {
   }
   Plotly.newPlot("wave", traces, {
     ...PLOT_LAYOUT,
+    height: PLOT_H,
     // Default view to the active region; double-click autoscales to the full tail.
     xaxis: { title: L.time, range: [0, activeXMax(cell.time, cell.current)] },
     yaxis: { title: L.current },
@@ -442,6 +457,8 @@ function renderLine(view, data, ref) {
   view.appendChild(div);
   Plotly.newPlot(div, [{ x: data.index_1, y: data.values, mode: "lines+markers", line: { color: "#5aa9e6" } }], {
     ...PLOT_LAYOUT,
+    height: PLOT_H,
+    margin: { ...PLOT_LAYOUT.margin, t: 32 },
     title: L.value,
     xaxis: { title: L.index_1 },
     yaxis: { title: L.value },
@@ -458,7 +475,8 @@ function renderHeatmap(view, data, ref) {
     type: "heatmap", colorscale: "Viridis", hovertemplate: hover,
   }], {
     ...PLOT_LAYOUT,
-    height: 360,
+    height: 300,
+    margin: { ...PLOT_LAYOUT.margin, t: 32 },
     title: L.value,
     xaxis: { title: L.index_2 },
     yaxis: { title: L.index_1 },
@@ -480,22 +498,28 @@ function renderHeatmap(view, data, ref) {
   );
   Plotly.newPlot(surf, [{
     z: data.values, x: data.index_2, y: data.index_1,
-    type: "surface", colorscale: "Viridis", showscale: false, hovertemplate: hover,
+    type: "surface", colorscale: "Viridis", showscale: false, opacity: 0.8, hovertemplate: hover,
   }, {
     x: px, y: py, z: pz, type: "scatter3d", mode: "markers",
-    marker: { size: 2, color: "#11131a" }, hovertemplate: hover, name: "points",
+    marker: { size: 1.65, color: "#ff8c00", opacity: 0.95 }, hovertemplate: hover, name: "points",
   }], {
     ...PLOT_LAYOUT,
-    height: 460,
+    height: 340,
+    margin: { l: 0, r: 0, t: 0, b: 0 },
     scene: {
       // Equal x/y screen extent, z capped at 50% of it, so steep z ranges
       // don't render as a cliff regardless of the data's value range.
       aspectmode: "manual",
       aspectratio: { x: 1, y: 1, z: 0.5 },
-      // All three axes start at 0 so x/y share the same origin corner.
-      xaxis: { title: L.index_2, range: [0, Math.max(...data.index_2)] },
-      yaxis: { title: L.index_1, range: [0, Math.max(...data.index_1)] },
-      zaxis: { title: L.value, range: [0, zmax] },
+      // Domain fills the div (less surrounding dead space); view from the -x/-y
+      // side and zoomed in so the (0,0,0) corner faces front and the surface
+      // fills the frame.
+      domain: { x: [0, 1], y: [0, 1] },
+      camera: { eye: { x: -1.2, y: -1.2, z: 0.85 } },
+      // All three axes start at 0 so x/y share the same origin corner; white grid.
+      xaxis: { title: L.index_2, range: [0, Math.max(...data.index_2)], ...GRID_WHITE },
+      yaxis: { title: L.index_1, range: [0, Math.max(...data.index_1)], ...GRID_WHITE },
+      zaxis: { title: L.value, range: [0, zmax], ...GRID_WHITE },
     },
   }, { responsive: true });
 }
@@ -546,6 +570,7 @@ function showWave(data, i, j) {
     x: data.index_3, y: data.values[i][j], mode: "lines", line: { color: "#7bd88f" },
   }], {
     ...PLOT_LAYOUT,
+    height: PLOT_H,
     xaxis: { title: L.index_3 },
     yaxis: { title: L.value },
   }, { responsive: true });
