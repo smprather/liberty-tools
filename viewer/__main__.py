@@ -97,6 +97,11 @@ def _open_when_ready(url: str, timeout: float = 15.0) -> None:
     help="Add a [b]Dump Debug[/] button that writes the page state to "
     "[cyan]/tmp/liberty_view_debug.json[/] for inspection.",
 )
+@click.option(
+    "--exit-on-close/--no-exit-on-close",
+    default=True,
+    help="Shut the server down shortly after the browser tab closes (default: true).",
+)
 @click.version_option(
     version=_package_version(),
     prog_name="liberty_view",
@@ -109,6 +114,7 @@ def main(
     reload: bool,
     open_browser: bool,
     dev: bool,
+    exit_on_close: bool,
 ) -> None:
     """Browse a **Liberty** (`.lib` / `.lib.gz`) library in the browser.
 
@@ -120,6 +126,8 @@ def main(
     os.environ["LIBERTY_FILE"] = liberty_file
     if dev:
         os.environ["LIBERTY_DEV"] = "1"
+    if exit_on_close:
+        os.environ["LIBERTY_EXIT_ON_CLOSE"] = "1"
     # 0.0.0.0 / "" are bind-all; point the browser and the probe at loopback.
     view_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
     requested = port

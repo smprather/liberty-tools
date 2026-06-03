@@ -9,8 +9,12 @@ pulls more than one table at a time — the basis for tolerating multi-GB files.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import signal
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -23,11 +27,47 @@ STATIC_DIR = Path(__file__).parent / "static"
 # Fixed, predictable path so "check the debug dump" always means this file.
 DEBUG_DUMP = Path("/tmp/liberty_view_debug.json")
 
+# Exit-when-tab-closed watchdog. The client heartbeats `/api/ping`; on tab close
+# it sends a `/api/bye` beacon. We exit once `_deadline` passes — heartbeats push
+# it forward, `bye` pulls it in (but leaves a grace window so a refresh, which
+# also fires the beacon, can re-ping and cancel the shutdown). No websockets.
+_IDLE_TIMEOUT = 15.0  # no heartbeat for this long -> client assumed gone
+_CLOSE_GRACE = 4.0  # after a `bye`, wait this long for a reload to re-ping
+_deadline: float | None = None  # monotonic exit time; None = watchdog disabled
+
 
 def _dev_enabled() -> bool:
     return os.environ.get("LIBERTY_DEV") == "1"
 
-app = FastAPI(title="Liberty Viewer")
+
+def _bump(seconds: float) -> None:
+    global _deadline
+    if _deadline is not None:
+        _deadline = time.monotonic() + seconds
+
+
+async def _watchdog() -> None:
+    while True:
+        await asyncio.sleep(1.0)
+        if _deadline is not None and time.monotonic() > _deadline:
+            # SIGINT -> uvicorn graceful shutdown (same as Ctrl-C).
+            signal.raise_signal(signal.SIGINT)
+            return
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _deadline
+    task = None
+    if os.environ.get("LIBERTY_EXIT_ON_CLOSE") == "1":
+        _deadline = time.monotonic() + _IDLE_TIMEOUT  # grace for first page load
+        task = asyncio.create_task(_watchdog())
+    yield
+    if task:
+        task.cancel()
+
+
+app = FastAPI(title="Liberty Viewer", lifespan=lifespan)
 _data: LibertyData | None = None
 
 
@@ -101,6 +141,21 @@ def table(
         return get_data().table(cell, pin, group, arc_index, table, container)
     except (KeyError, IndexError) as exc:
         raise HTTPException(404, f"table not found: {exc}")
+
+
+@app.get("/api/ping")
+def ping():
+    """Client heartbeat — keeps the exit-on-close watchdog from firing."""
+    _bump(_IDLE_TIMEOUT)
+    return {"ok": True}
+
+
+@app.post("/api/bye")
+async def bye():
+    """Tab-close beacon — pull the exit deadline in to a short grace window (a
+    refresh fires this too, but its reload re-pings before the grace elapses)."""
+    _bump(_CLOSE_GRACE)
+    return {"ok": True}
 
 
 @app.get("/api/config")

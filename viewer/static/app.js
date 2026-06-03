@@ -592,3 +592,14 @@ document.getElementById("filter").addEventListener("input", (e) => {
 loadMeta().catch((e) => (document.getElementById("lib-name").textContent = "error: " + e.message));
 loadCells("").catch((e) => console.error(e));
 initDevBar();
+
+// Let the server exit when this tab goes away: heartbeat while open, beacon on
+// close. A refresh fires the beacon too, but the reloaded page re-pings inside
+// the server's grace window, so it survives. (Disabled by --no-exit-on-close.)
+function heartbeat() {
+  fetch("/api/ping").catch(() => {});
+}
+heartbeat();
+setInterval(heartbeat, 5000);
+addEventListener("pageshow", heartbeat);
+addEventListener("pagehide", () => navigator.sendBeacon("/api/bye"));
