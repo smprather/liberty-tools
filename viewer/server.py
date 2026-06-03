@@ -31,12 +31,19 @@ app = FastAPI(title="Liberty Viewer")
 _data: LibertyData | None = None
 
 
+# The app shell + our own JS/CSS, in addition to all /api/ JSON. `plotly.min.js`
+# is deliberately omitted (large, immutable) so it stays cacheable.
+_NO_STORE_PATHS = {"/", "/index.html", "/app.js", "/style.css"}
+
+
 @app.middleware("http")
-async def no_store_api(request: Request, call_next):
-    """Never let the browser cache API JSON — the tree/table payloads change
-    whenever the lib is rebuilt, and a stale cached tree silently hides edits."""
+async def no_store(request: Request, call_next):
+    """Never let the browser cache API JSON or the frontend assets — payloads and
+    the JS/HTML change whenever the lib or viewer is rebuilt, and a stale cached
+    copy silently hides edits (e.g. a new bottom pane that never appears)."""
     response = await call_next(request)
-    if request.url.path.startswith("/api/"):
+    path = request.url.path
+    if path.startswith("/api/") or path in _NO_STORE_PATHS:
         response.headers["Cache-Control"] = "no-store"
     return response
 
