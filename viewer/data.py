@@ -59,6 +59,7 @@ _SI_PREFIX = {-18: "a", -15: "f", -12: "p", -9: "n", -6: "u", -3: "m", 0: ""}
 _ALIAS = {
     "total_output_net_capacitance": "load",
     "input_net_transition": "slew",
+    "input_transition_time": "slew",
 }
 
 
