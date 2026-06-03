@@ -91,9 +91,9 @@ function cellNode(name) {
     }
     return cellData;
   }
-  // Arrow marker toggles expand/collapse; the rest of the row only selects.
-  toggleEl.onclick = async (e) => {
-    e.stopPropagation();
+  // Arrow marker (single-click) or row (double-click) toggles expand/collapse;
+  // a single row click only selects.
+  const toggle = async () => {
     const open = !kids.classList.toggle("hidden");
     toggleEl.textContent = open ? "▾" : "▸";
     if (open && !built) {
@@ -103,6 +103,11 @@ function cellNode(name) {
       }
     }
   };
+  toggleEl.onclick = (e) => {
+    e.stopPropagation();
+    toggle();
+  };
+  row.ondblclick = toggle;
   row.onclick = async () => {
     selectRow(li);
     renderAttrs(await ensure());
@@ -154,10 +159,10 @@ function treeNode(node, cellName) {
   if (hasKids) {
     kids = document.createElement("ul");
     kids.className = "tree hidden";
-    // Arrow marker toggles expand/collapse; clicking the rest of the row only
-    // selects (so navigating long trees doesn't fold things by accident).
-    toggleEl.onclick = (e) => {
-      e.stopPropagation();
+    // Arrow marker (single-click) or row (double-click) toggles expand/collapse;
+    // a single row click only selects, so navigating long trees doesn't fold
+    // things by accident. Leaves have no toggle, so double-click is ignored.
+    const toggle = () => {
       const open = !kids.classList.toggle("hidden");
       toggleEl.textContent = open ? "▾" : "▸";
       if (open && !built) {
@@ -165,6 +170,11 @@ function treeNode(node, cellName) {
         for (const child of node.children) kids.appendChild(treeNode(child, cellName));
       }
     };
+    toggleEl.onclick = (e) => {
+      e.stopPropagation();
+      toggle();
+    };
+    row.ondblclick = toggle;
   }
   row.onclick = () => {
     selectRow(li);

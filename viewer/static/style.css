@@ -50,6 +50,7 @@ ul.tree { padding-left: 0; }
   padding: 1px 3px;
   border-radius: 3px;
   white-space: nowrap;
+  user-select: none;
 }
 .node > .row:hover { background: #2f2f37; }
 .node.cell > .row { color: var(--accent); }
