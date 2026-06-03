@@ -212,6 +212,9 @@ class LibertyData:
             "current_unit": self.doc.current_unit,
             "time_unit": self.doc.time_unit,
             "energy_unit_joules": self.doc.energy_unit_joules(),
+            "leakage_power_unit": next(
+                (v for k, v in self.doc.attributes() if k == "leakage_power_unit"), None
+            ),
             "num_cells": self.doc.num_cells(),
             "attributes": [[k, str(v)] for k, v in self.doc.attributes()],
             "driver_waveforms": self._driver_waveforms(),

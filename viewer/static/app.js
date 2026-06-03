@@ -31,7 +31,15 @@ async function loadMeta() {
     renderLibrary(m);
   };
   const energy = energyLabel(m.energy_unit_joules);
-  const units = [m.voltage_unit, m.current_unit, m.time_unit, energy]
+  // Drop the leading magnitude ("1ps" -> "ps", "1mA" -> "mA").
+  const bare = (u) => (u ? u.replace(/^\s*[0-9.eE+-]+\s*/, "") : u);
+  const units = [
+    bare(m.voltage_unit),
+    bare(m.current_unit),
+    bare(m.time_unit),
+    energy,
+    bare(m.leakage_power_unit),
+  ]
     .filter(Boolean)
     .join(" / ");
   document.getElementById("lib-units").textContent =
