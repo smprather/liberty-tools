@@ -93,7 +93,7 @@ function cellNode(name) {
     if (open && cellData) {
       selectRow(li);
       renderAttrs(cellData);
-      showSource(name);
+      showSource(name, { kind: "cell", name });
     }
   };
   li.appendChild(row);
@@ -120,7 +120,7 @@ function treeNode(node, cellName) {
     row.onclick = () => {
       selectRow(li);
       loadTable(cellName, node.ref);
-      showSource(cellName);
+      showSource(cellName, node.src);
     };
     li.appendChild(row);
     return li;
@@ -130,7 +130,7 @@ function treeNode(node, cellName) {
     row.onclick = () => {
       selectRow(li);
       renderLeakage(node.leakage);
-      showSource(cellName);
+      showSource(cellName, node.src);
     };
     li.appendChild(row);
     return li;
@@ -156,7 +156,7 @@ function treeNode(node, cellName) {
     if (node.attributes && node.attributes.length) {
       selectRow(li);
       renderAttrs(node);
-      showSource(cellName);
+      showSource(cellName, node.src);
     }
   };
   li.appendChild(row);
@@ -520,11 +520,53 @@ function hideWave() {
 }
 
 // ---- raw cell source (bottom pane) -----------------------------------------
-// One byte-slice per cell from the server's in-memory buffer; cached per cell so
-// re-selecting within a cell never refetches. Cost is O(cell size), so this
-// stays snappy on multi-GB libraries.
+// One byte-slice per cell from the server's in-memory buffer (cached per cell, so
+// re-selecting never refetches — cost is O(cell size), snappy on multi-GB libs).
+// The view is then scoped to the selected node's group (cell/pin/bus/bundle) by
+// brace-matching that group out of the cached cell text, here in the browser.
 const _sourceCache = {};
-async function showSource(cell) {
+
+function _escRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Return the index of the `}` matching the `{` at `open`, ignoring braces inside
+// quoted strings and #/// /* */ comments.
+function _matchBrace(text, open) {
+  let depth = 0;
+  let line = false;
+  let block = false;
+  let str = false;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    const n = text[i + 1];
+    if (line) { if (c === "\n") line = false; continue; }
+    if (block) { if (c === "*" && n === "/") { block = false; i++; } continue; }
+    if (str) { if (c === "\\") i++; else if (c === '"') str = false; continue; }
+    if (c === '"') { str = true; continue; }
+    if (c === "#") { line = true; continue; }
+    if (c === "/" && n === "/") { line = true; i++; continue; }
+    if (c === "/" && n === "*") { block = true; i++; continue; }
+    if (c === "{") depth++;
+    else if (c === "}") { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+// Slice the `kind (name) { ... }` group (including its header line) out of text.
+function _sliceGroup(text, kind, name) {
+  const hdr = new RegExp(
+    `(?:^|\\n)([ \\t]*)${_escRe(kind)}[ \\t]*\\([ \\t]*${_escRe(name)}[ \\t]*\\)[ \\t]*\\{`
+  );
+  const m = hdr.exec(text);
+  if (!m) return null;
+  const start = m.index + (text[m.index] === "\n" ? 1 : 0);
+  const end = _matchBrace(text, text.indexOf("{", m.index));
+  return end < 0 ? null : text.slice(start, end + 1);
+}
+
+async function showSource(cell, src) {
+  src = src || { kind: "cell", name: cell };
   const sec = document.getElementById("source-section");
   const title = document.getElementById("source-title");
   const pre = document.getElementById("source");
@@ -539,9 +581,19 @@ async function showSource(cell) {
     }
   }
   const d = _sourceCache[cell];
-  title.textContent =
-    `source: ${cell} (${d.length.toLocaleString()} chars${d.truncated ? ", truncated" : ""})`;
-  pre.textContent = d.text;
+  let text = d.text;
+  let label = `${cell} · cell`;
+  if (src.kind !== "cell") {
+    const slice = _sliceGroup(d.text, src.kind, src.name);
+    if (slice !== null) {
+      text = slice;
+      label = `${src.name} · ${src.kind}`;
+    }
+  }
+  const lines = text.split("\n").length;
+  const trunc = src.kind === "cell" && d.truncated ? ", truncated" : "";
+  title.textContent = `source: ${label} (${lines.toLocaleString()} lines${trunc})`;
+  pre.textContent = text;
 }
 
 // ---- debug dump (only when the server runs with --dev) ---------------------

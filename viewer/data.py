@@ -102,6 +102,15 @@ def _fmt_attr_rows(rows: list[tuple[str, str]]) -> list[list[str]]:
     return [[k, _fmt_bool(v) if k in _BOOL_ATTRS else v] for k, v in rows]
 
 
+def _propagate_src(node: dict[str, Any], parent_src: dict[str, str]) -> None:
+    """Stamp every node with a source scope (cell/pin/bus/bundle group): nodes
+    that don't define their own inherit the nearest named ancestor's."""
+    src = node.get("src") or parent_src
+    node["src"] = src
+    for child in node.get("children", []):
+        _propagate_src(child, src)
+
+
 def _meta_attrs(meta: dict[str, Any]) -> list[list[str]]:
     """Turn a node's scalar meta dict into ordered ``[name, value]`` rows,
     dropping empty entries — for nodes (arc/power/bus/bundle) that have no raw
@@ -279,6 +288,7 @@ class LibertyData:
             "type": "cell",
             "meta": {"area": cell.area},
             "attributes": _fmt_attr_rows(cell.attributes()),
+            "src": {"kind": "cell", "name": cell_name},
             "children": [],
         }
         for pin_name in cell.pins():
@@ -291,6 +301,7 @@ class LibertyData:
                 "type": "bus",
                 "meta": {"direction": bus.direction, "bus_type": bus.bus_type},
                 "attributes": _meta_attrs({"direction": bus.direction, "bus_type": bus.bus_type}),
+                "src": {"kind": "bus", "name": bus_name},
                 "children": self._arc_nodes(list(bus.timing_arcs()), "bus", bus_name, ""),
             }
             for pin_name in bus.pins():
@@ -306,6 +317,7 @@ class LibertyData:
                 "attributes": _meta_attrs(
                     {"direction": bundle.direction, "members": ", ".join(bundle.members)}
                 ),
+                "src": {"kind": "bundle", "name": bundle_name},
                 "children": self._arc_nodes(list(bundle.timing_arcs()), "bundle", bundle_name, ""),
             }
             for pin_name in bundle.pins():
@@ -315,6 +327,9 @@ class LibertyData:
         if leak:
             node["children"].append(leak)
         node["children"].extend(self._ccsp_nodes(cell))
+        # Each node carries the source scope (cell/pin/bus/bundle group) to show
+        # in the bottom pane; descendants inherit their nearest named ancestor.
+        _propagate_src(node, node["src"])
         return node
 
     def _leakage_node(self, cell: lt.Cell, cell_name: str) -> dict[str, Any] | None:
@@ -420,6 +435,7 @@ class LibertyData:
             "type": "pin",
             "meta": {"direction": pin.direction, "function": _fmt_bool(pin.function)},
             "attributes": _fmt_attr_rows(pin.attributes()),
+            "src": {"kind": "pin", "name": pin.name},
             "children": children,
         }
 
@@ -531,12 +547,12 @@ class LibertyData:
         container: str,
     ) -> dict[str, Any]:
         first = members[0][1]
-        parts = []
-        if first.related_pin:
-            parts.append(f"<- {first.related_pin}")
+        # `timing <related>→<owner> <type>`, e.g. `timing a→y combinational`.
+        arrow = f"{first.related_pin}→{owner}" if first.related_pin else owner
+        parts = [arrow]
         if first.timing_type:
             parts.append(first.timing_type)
-        label = "timing " + " ".join(parts) if parts else "timing"
+        label = "timing " + " ".join(parts)
         # For bus/bundle direct arcs, the "pin" used by /api/table is the owner name.
         base = container if scope == "pin" else f"{scope}:{owner}"
 
