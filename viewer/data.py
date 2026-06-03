@@ -308,8 +308,45 @@ class LibertyData:
             for pin_name in bundle.pins():
                 unode["children"].append(self._pin_node(bundle.pin(pin_name), container=f"bundle:{bundle_name}"))
             node["children"].append(unode)
+        leak = self._leakage_node(cell, cell_name)
+        if leak:
+            node["children"].append(leak)
         node["children"].extend(self._ccsp_nodes(cell))
         return node
+
+    def _leakage_node(self, cell: lt.Cell, cell_name: str) -> dict[str, Any] | None:
+        """`leakage_power` as a single when-condition × power-rail table node.
+
+        Rows are when-conditions (canonical form; the no-`when` default is
+        `(default)`); columns are the `related_pg_pin` rails (or one `value`
+        column when no rail is given). Cells are the leakage values."""
+        lps = cell.leakage_powers()
+        if not lps:
+            return None
+        has_pg = any(lp.related_pg_pin for lp in lps)
+        cols = (
+            sorted({lp.related_pg_pin for lp in lps if lp.related_pg_pin})
+            if has_pg
+            else ["value"]
+        )
+        rows: dict[str, dict[str, float | None]] = {}
+        order: list[str] = []
+        for lp in lps:
+            key = _fmt_bool(lp.when) if lp.when else "(default)"
+            if key not in rows:
+                rows[key] = {}
+                order.append(key)
+            rows[key][lp.related_pg_pin if has_pg else "value"] = lp.value
+        return {
+            "id": f"cell:{cell_name}|leakage",
+            "label": "leakage_power",
+            "type": "leakage",
+            "leakage": {
+                "pg_pins": cols,
+                "rows": [{"when": k, "values": rows[k]} for k in order],
+            },
+            "children": [],
+        }
 
     def _ccsp_nodes(self, cell: lt.Cell) -> list[dict[str, Any]]:
         """CCS-power (`dynamic_current`) subtree: dynamic_current -> switching_group

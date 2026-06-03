@@ -47,6 +47,7 @@ struct Cell {
     dynamic_currents: Vec<DynamicCurrentData>,
     ff: Option<FfData>,
     latch: Option<LatchData>,
+    leakage_powers: Vec<LeakagePowerData>,
 }
 
 #[pyclass]
@@ -171,6 +172,45 @@ struct CellData {
     dynamic_currents: Vec<DynamicCurrentData>,
     ff: Option<FfData>,
     latch: Option<LatchData>,
+    leakage_powers: Vec<LeakagePowerData>,
+}
+
+/// A `leakage_power` group: a state-dependent (or default) static leakage value,
+/// optionally per power rail.
+#[derive(Clone, Default)]
+struct LeakagePowerData {
+    value: Option<f64>,
+    when: Option<String>,
+    related_pg_pin: Option<String>,
+}
+
+#[pyclass]
+#[derive(Clone)]
+struct LeakagePower {
+    #[pyo3(get)]
+    value: Option<f64>,
+    #[pyo3(get)]
+    when: Option<String>,
+    #[pyo3(get)]
+    related_pg_pin: Option<String>,
+}
+
+impl From<LeakagePowerData> for LeakagePower {
+    fn from(value: LeakagePowerData) -> Self {
+        Self {
+            value: value.value,
+            when: value.when,
+            related_pg_pin: value.related_pg_pin,
+        }
+    }
+}
+
+#[pymethods]
+impl LeakagePower {
+    /// The `when` condition as a parsed `BooleanExpression` (None if absent).
+    fn when_expr(&self) -> PyResult<Option<BooleanExpression>> {
+        expr_of(&self.when)
+    }
 }
 
 /// A flip-flop (`ff` / `ff_bank`) group. The two header args are the
@@ -405,6 +445,7 @@ impl From<CellData> for Cell {
             dynamic_currents: value.dynamic_currents,
             ff: value.ff,
             latch: value.latch,
+            leakage_powers: value.leakage_powers,
         }
     }
 }
@@ -787,6 +828,15 @@ impl Cell {
     /// The latch (`latch` / `latch_bank`) group, if present.
     fn latch(&self) -> Option<Latch> {
         self.latch.clone().map(Latch::from)
+    }
+
+    /// `leakage_power` groups (state-dependent / default static leakage).
+    fn leakage_powers(&self) -> Vec<LeakagePower> {
+        self.leakage_powers
+            .iter()
+            .cloned()
+            .map(LeakagePower::from)
+            .collect()
     }
 }
 
@@ -1175,6 +1225,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BooleanExpression>()?;
     m.add_class::<Ff>()?;
     m.add_class::<Latch>()?;
+    m.add_class::<LeakagePower>()?;
     m.add_function(wrap_pyfunction!(parse_file, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize_str, m)?)?;
@@ -2680,6 +2731,7 @@ impl Parser {
         let mut dynamic_currents = Vec::new();
         let mut ff = None;
         let mut latch = None;
+        let mut leakage_powers = Vec::new();
         while !self.consume_symbol(b'}')? {
             let item_name = self.take_word()?;
             if self.consume_symbol(b'(')? {
@@ -2714,6 +2766,9 @@ impl Parser {
                         "latch" | "latch_bank" => {
                             latch = Some(self.parse_latch_body(&args)?);
                         }
+                        "leakage_power" => {
+                            leakage_powers.push(self.parse_leakage_power_body()?);
+                        }
                         _ => {
                             self.skip_group_body()?;
                         }
@@ -2743,7 +2798,35 @@ impl Parser {
             dynamic_currents,
             ff,
             latch,
+            leakage_powers,
         })
+    }
+
+    /// Parse a `leakage_power` body: a `value` plus optional `when` /
+    /// `related_pg_pin`. Any nested groups are skipped.
+    fn parse_leakage_power_body(&mut self) -> Result<LeakagePowerData, ParseError> {
+        let mut leak = LeakagePowerData::default();
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b'(')? {
+                let _args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    self.skip_group_body()?;
+                }
+                self.consume_symbol(b';')?;
+            } else if self.consume_symbol(b':')? {
+                let value = self.read_simple_attribute_value()?;
+                match item_name.as_str() {
+                    "value" => leak.value = parse_number(&value),
+                    "when" => leak.when = Some(value),
+                    "related_pg_pin" => leak.related_pg_pin = Some(value),
+                    _ => {}
+                }
+            } else {
+                return Err(self.error_here("expected '(' or ':' in leakage_power"));
+            }
+        }
+        Ok(leak)
     }
 
     /// Parse an `ff` / `ff_bank` body. `args` are the header arguments; the

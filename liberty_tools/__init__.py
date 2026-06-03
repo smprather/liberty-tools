@@ -217,6 +217,10 @@ class Cell:
         native = self._native.latch()
         return Latch(native) if native is not None else None
 
+    def leakage_powers(self) -> list[LeakagePower]:
+        """``leakage_power`` groups (state-dependent / default static leakage)."""
+        return [LeakagePower(lp) for lp in self._native.leakage_powers()]
+
 
 class Pin:
     def __init__(self, native: _native.Pin):
@@ -528,6 +532,30 @@ class PgCurrent:
         return [TimingTable(v) for v in self._native.vectors()]
 
 
+class LeakagePower:
+    """A ``leakage_power`` group: a static leakage ``value`` (library power
+    units), optionally gated by a ``when`` state and tied to a power rail."""
+
+    def __init__(self, native: _native.LeakagePower):
+        self._native = native
+
+    @property
+    def value(self) -> float | None:
+        return self._native.value
+
+    @property
+    def when(self) -> str | None:
+        return self._native.when
+
+    @property
+    def related_pg_pin(self) -> str | None:
+        return self._native.related_pg_pin
+
+    def when_expr(self) -> BooleanExpression | None:
+        """The ``when`` condition as a parsed :class:`BooleanExpression` (None if absent)."""
+        return _wrap_expr(self._native.when_expr())
+
+
 class Ff:
     """A flip-flop (``ff`` / ``ff_bank``) group. The boolean attributes are
     available raw (strings) and as parsed expressions via ``*_expr``."""
@@ -756,6 +784,7 @@ __all__ = [
     "Ff",
     "InternalPower",
     "Latch",
+    "LeakagePower",
     "LibertyDocument",
     "LibraryIndex",
     "Pin",

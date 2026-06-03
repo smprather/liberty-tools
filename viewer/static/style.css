@@ -58,6 +58,7 @@ ul.tree { padding-left: 0; }
 .node.dynamic > .row { color: #56b6c2; }
 .node.switchgroup > .row { color: #d19a66; }
 .node.pgpin > .row { color: #6fb3a0; }
+.node.leakage > .row { color: #d98a8a; }
 .node.table > .row { color: var(--leaf); }
 .node.selected > .row { background: #34405a; }
 .toggle { display: inline-block; width: 12px; color: var(--muted); }
@@ -94,6 +95,7 @@ table.attrs td, table.attrs th {
   vertical-align: top;
 }
 table.attrs th { color: var(--muted); font-weight: 600; font-size: 11px; }
+table.attrs td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.attrs td.k { color: #e6c07b; white-space: nowrap; }
 table.grid { border-collapse: collapse; margin-top: 6px; }
 table.grid th { color: var(--muted); padding: 2px 6px; font-weight: normal; font-size: 11px; }

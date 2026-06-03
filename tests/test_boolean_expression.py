@@ -129,6 +129,15 @@ library (seq_lib) {
       clear : "RN'";
       preset : "SN'";
     }
+    leakage_power () {
+      when : "D & CP";
+      related_pg_pin : VDD;
+      value : 12.5;
+    }
+    leakage_power () {
+      related_pg_pin : VSS;
+      value : 0;
+    }
     pin (D) {
       direction : input;
     }
@@ -203,6 +212,18 @@ def test_ff_accessors(seq_doc):
     assert ff.clear_expr() == B("!RN")  # apostrophe NOT
     assert ff.preset_expr() == B("!SN")
     assert seq_doc.cell("LAT").ff() is None
+
+
+def test_leakage_power(seq_doc):
+    lps = seq_doc.cell("DFF").leakage_powers()
+    assert len(lps) == 2
+    gated = next(lp for lp in lps if lp.when)
+    assert gated.value == 12.5
+    assert gated.related_pg_pin == "VDD"
+    assert gated.when_expr() == B("D & CP")
+    default = next(lp for lp in lps if lp.when is None)
+    assert default.value == 0.0 and default.related_pg_pin == "VSS"
+    assert seq_doc.cell("LAT").leakage_powers() == []
 
 
 def test_latch_accessors(seq_doc):

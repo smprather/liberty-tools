@@ -118,6 +118,16 @@ function treeNode(node, cellName) {
     return li;
   }
 
+  if (node.type === "leakage") {
+    row.onclick = () => {
+      selectRow(li);
+      renderLeakage(node.leakage);
+      showSource(cellName);
+    };
+    li.appendChild(row);
+    return li;
+  }
+
   let kids = null;
   let built = false;
   if (hasKids) {
@@ -161,6 +171,32 @@ function renderAttrs(node) {
   t.innerHTML =
     "<tr><th>attribute</th><th>value</th></tr>" +
     attrs.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
+  view.appendChild(t);
+}
+
+// leakage_power: a when-condition × power-rail table of static leakage values.
+function renderLeakage(d) {
+  const view = document.getElementById("view");
+  view.innerHTML = "";
+  hideWave();
+  document.getElementById("crumb").textContent = "leakage_power · when × power";
+  const cols = d.pg_pins;
+  const t = document.createElement("table");
+  t.className = "attrs";
+  t.innerHTML =
+    "<tr><th>when</th>" +
+    cols.map((c) => `<th>${c}</th>`).join("") +
+    "</tr>" +
+    d.rows
+      .map(
+        (r) =>
+          `<tr><th>${r.when}</th>` +
+          cols
+            .map((c) => `<td class="num">${r.values[c] ?? ""}</td>`)
+            .join("") +
+          "</tr>"
+      )
+      .join("");
   view.appendChild(t);
 }
 
