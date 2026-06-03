@@ -458,15 +458,12 @@ function renderHeatmap(view, data, ref) {
     type: "heatmap", colorscale: "Viridis", hovertemplate: hover,
   }], {
     ...PLOT_LAYOUT,
+    height: 360,
     title: L.value,
     xaxis: { title: L.index_2 },
     yaxis: { title: L.index_1 },
   }, { responsive: true });
 
-  const surfTitle = document.createElement("h3");
-  surfTitle.className = "section";
-  surfTitle.textContent = "3D surface";
-  view.appendChild(surfTitle);
   const surf = document.createElement("div");
   view.appendChild(surf);
   const zmax = Math.max(...data.values.flat());
@@ -641,12 +638,8 @@ async function showSource(cell, src) {
   }
   const d = _sourceCache[cell];
   const path = (src && src.path) || [];
-  const text = _walkPath(d.text, path);
-  const label = (src && src.label) || `${cell} · cell`;
-  const lines = text.split("\n").length;
-  const trunc = path.length === 0 && d.truncated ? ", truncated" : "";
-  title.textContent = `source: ${label} (${lines.toLocaleString()} lines${trunc})`;
-  pre.textContent = text;
+  title.textContent = "";  // label dropped to save vertical space
+  pre.textContent = _walkPath(d.text, path);
 }
 
 // ---- debug dump (only when the server runs with --dev) ---------------------

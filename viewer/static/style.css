@@ -150,6 +150,7 @@ table.grid td.num { padding: 3px 6px; text-align: right; color: var(--fg); white
 #wave-section { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
 #source-section { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
 #source-title { margin-bottom: 6px; }
+#source-title:empty { display: none; }
 #source {
   margin: 0;
   max-height: 360px;
