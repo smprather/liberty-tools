@@ -1,4 +1,8 @@
-use crate::impl_::pycell::{PyClassObject, PyClassObjectLayout as _};
+use crate::impl_::pycell::PyClassObjectBaseLayout as _;
+use crate::impl_::pyclass::PyClassImpl;
+#[cfg(feature = "experimental-inspect")]
+use crate::inspect::PyStaticExpr;
+use crate::pycell::impl_::PyClassObjectLayout as _;
 use crate::pycell::PyBorrowMutError;
 use crate::pycell::{impl_::PyClassBorrowChecker, PyBorrowError};
 use crate::pyclass::boolean_struct::False;
@@ -93,7 +97,13 @@ impl<'a, T: PyClass> PyClassGuard<'a, T> {
         Self::try_from_class_object(obj.get_class_object())
     }
 
-    fn try_from_class_object(obj: &'a PyClassObject<T>) -> Result<Self, PyBorrowError> {
+    pub(crate) fn try_borrow_from_borrowed(
+        obj: Borrowed<'a, '_, T>,
+    ) -> Result<Self, PyBorrowError> {
+        Self::try_from_class_object(obj.get_class_object())
+    }
+
+    fn try_from_class_object(obj: &'a <T as PyClassImpl>::Layout) -> Result<Self, PyBorrowError> {
         obj.ensure_threadsafe();
         obj.borrow_checker().try_borrow().map(|_| Self {
             ptr: NonNull::from(obj).cast(),
@@ -101,7 +111,7 @@ impl<'a, T: PyClass> PyClassGuard<'a, T> {
         })
     }
 
-    pub(crate) fn as_class_object(&self) -> &'a PyClassObject<T> {
+    pub(crate) fn as_class_object(&self) -> &'a <T as PyClassImpl>::Layout {
         // SAFETY: `ptr` by construction points to a `PyClassObject<T>` and is
         // valid for at least 'a
         unsafe { self.ptr.cast().as_ref() }
@@ -281,9 +291,12 @@ impl<T: PyClass> Deref for PyClassGuard<'_, T> {
 impl<'a, 'py, T: PyClass> FromPyObject<'a, 'py> for PyClassGuard<'a, T> {
     type Error = PyClassGuardError<'a, 'py>;
 
+    #[cfg(feature = "experimental-inspect")]
+    const INPUT_TYPE: PyStaticExpr = T::TYPE_HINT;
+
     fn extract(obj: Borrowed<'a, 'py, crate::PyAny>) -> Result<Self, Self::Error> {
         Self::try_from_class_object(
-            obj.cast()
+            obj.cast::<T>()
                 .map_err(|e| PyClassGuardError(Some(e)))?
                 .get_class_object(),
         )
@@ -295,6 +308,9 @@ impl<'a, 'py, T: PyClass> IntoPyObject<'py> for PyClassGuard<'a, T> {
     type Target = T;
     type Output = Borrowed<'a, 'py, T>;
     type Error = Infallible;
+
+    #[cfg(feature = "experimental-inspect")]
+    const OUTPUT_TYPE: PyStaticExpr = T::TYPE_HINT;
 
     #[inline]
     fn into_pyobject(self, py: crate::Python<'py>) -> Result<Self::Output, Self::Error> {
@@ -308,7 +324,7 @@ impl<'a, 'py, T: PyClass> IntoPyObject<'py> for &PyClassGuard<'a, T> {
     type Error = Infallible;
 
     #[cfg(feature = "experimental-inspect")]
-    const OUTPUT_TYPE: &'static str = T::PYTHON_TYPE;
+    const OUTPUT_TYPE: PyStaticExpr = T::TYPE_HINT;
 
     #[inline]
     fn into_pyobject(self, py: crate::Python<'py>) -> Result<Self::Output, Self::Error> {
@@ -421,7 +437,7 @@ impl From<PyClassGuardError<'_, '_>> for PyErr {
 ///         let mut holder_0 = ::pyo3::impl_::extract_argument::FunctionArgumentHolder::INIT;
 ///         let result = {
 ///             let ret = function(::pyo3::impl_::extract_argument::extract_pyclass_ref_mut::<Number>(
-///                 unsafe { ::pyo3::impl_::pymethods::BoundRef::ref_from_ptr(py, &_slf) }.0,
+///                 unsafe { ::pyo3::impl_::extract_argument::cast_function_argument(py, _slf) },
 ///                 &mut holder_0,
 ///             )?);
 ///             {
@@ -439,10 +455,9 @@ impl From<PyClassGuardError<'_, '_>> for PyErr {
 ///     }
 ///
 ///     unsafe {
-///         ::pyo3::impl_::trampoline::noargs(
+///         ::pyo3::impl_::trampoline::get_trampoline_function!(noargs, inner)(
 ///             _slf,
 ///             _args,
-///             inner,
 ///         )
 ///     }
 /// }
@@ -584,7 +599,15 @@ impl<'a, T: PyClass<Frozen = False>> PyClassGuardMut<'a, T> {
         Self::try_from_class_object(obj.get_class_object())
     }
 
-    fn try_from_class_object(obj: &'a PyClassObject<T>) -> Result<Self, PyBorrowMutError> {
+    pub(crate) fn try_borrow_mut_from_borrowed(
+        obj: Borrowed<'a, '_, T>,
+    ) -> Result<Self, PyBorrowMutError> {
+        Self::try_from_class_object(obj.get_class_object())
+    }
+
+    fn try_from_class_object(
+        obj: &'a <T as PyClassImpl>::Layout,
+    ) -> Result<Self, PyBorrowMutError> {
         obj.ensure_threadsafe();
         obj.borrow_checker().try_borrow_mut().map(|_| Self {
             ptr: NonNull::from(obj).cast(),
@@ -592,7 +615,7 @@ impl<'a, T: PyClass<Frozen = False>> PyClassGuardMut<'a, T> {
         })
     }
 
-    pub(crate) fn as_class_object(&self) -> &'a PyClassObject<T> {
+    pub(crate) fn as_class_object(&self) -> &'a <T as PyClassImpl>::Layout {
         // SAFETY: `ptr` by construction points to a `PyClassObject<T>` and is
         // valid for at least 'a
         unsafe { self.ptr.cast().as_ref() }
@@ -684,9 +707,12 @@ impl<T: PyClass<Frozen = False>> DerefMut for PyClassGuardMut<'_, T> {
 impl<'a, 'py, T: PyClass<Frozen = False>> FromPyObject<'a, 'py> for PyClassGuardMut<'a, T> {
     type Error = PyClassGuardMutError<'a, 'py>;
 
+    #[cfg(feature = "experimental-inspect")]
+    const INPUT_TYPE: PyStaticExpr = T::TYPE_HINT;
+
     fn extract(obj: Borrowed<'a, 'py, crate::PyAny>) -> Result<Self, Self::Error> {
         Self::try_from_class_object(
-            obj.cast()
+            obj.cast::<T>()
                 .map_err(|e| PyClassGuardMutError(Some(e)))?
                 .get_class_object(),
         )
@@ -699,6 +725,9 @@ impl<'a, 'py, T: PyClass<Frozen = False>> IntoPyObject<'py> for PyClassGuardMut<
     type Output = Borrowed<'a, 'py, T>;
     type Error = Infallible;
 
+    #[cfg(feature = "experimental-inspect")]
+    const OUTPUT_TYPE: PyStaticExpr = T::TYPE_HINT;
+
     #[inline]
     fn into_pyobject(self, py: crate::Python<'py>) -> Result<Self::Output, Self::Error> {
         (&self).into_pyobject(py)
@@ -709,6 +738,9 @@ impl<'a, 'py, T: PyClass<Frozen = False>> IntoPyObject<'py> for &PyClassGuardMut
     type Target = T;
     type Output = Borrowed<'a, 'py, T>;
     type Error = Infallible;
+
+    #[cfg(feature = "experimental-inspect")]
+    const OUTPUT_TYPE: PyStaticExpr = T::TYPE_HINT;
 
     #[inline]
     fn into_pyobject(self, py: crate::Python<'py>) -> Result<Self::Output, Self::Error> {

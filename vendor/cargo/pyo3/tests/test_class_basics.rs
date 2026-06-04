@@ -1,10 +1,10 @@
 #![cfg(feature = "macros")]
 
-#[cfg(Py_3_8)]
-use pyo3::ffi::c_str;
 use pyo3::prelude::*;
+use pyo3::py_run;
 use pyo3::types::PyType;
-use pyo3::{py_run, PyClass};
+#[cfg(not(target_arch = "wasm32"))]
+use pyo3::PyClass;
 
 mod test_utils;
 
@@ -52,7 +52,6 @@ struct ClassWithDocs {
 
     /// Write-only property field
     #[pyo3(set)]
-    #[allow(dead_code)] // Rust detects field is never read
     writeonly: i32,
 }
 
@@ -288,6 +287,7 @@ impl UnsendableChild {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn test_unsendable<T: PyClass + 'static>() -> PyResult<()> {
     let (keep_obj_here, obj) = Python::attach(|py| -> PyResult<_> {
         let obj: Py<T> = PyType::new::<T>(py).call1((5,))?.extract()?;
@@ -326,7 +326,7 @@ fn test_unsendable<T: PyClass + 'static>() -> PyResult<()> {
 
 /// If a class is marked as `unsendable`, it panics when accessed by another thread.
 #[test]
-#[cfg_attr(target_arch = "wasm32", ignore)]
+#[cfg(not(target_arch = "wasm32"))]
 #[should_panic(
     expected = "test_class_basics::UnsendableBase is unsendable, but sent to another thread"
 )]
@@ -335,7 +335,7 @@ fn panic_unsendable_base() {
 }
 
 #[test]
-#[cfg_attr(target_arch = "wasm32", ignore)]
+#[cfg(not(target_arch = "wasm32"))]
 #[should_panic(
     expected = "test_class_basics::UnsendableBase is unsendable, but sent to another thread"
 )]
@@ -658,8 +658,7 @@ fn drop_unsendable_elsewhere() {
                         // will not immediately drop it because the refcounts need to be merged.
                         //
                         // Force GC to ensure the drop happens now on the wrong thread.
-                        py.run(c_str!("import gc; gc.collect()"), None, None)
-                            .unwrap();
+                        py.run(c"import gc; gc.collect()", None, None).unwrap();
                     });
                 })
                 .join()

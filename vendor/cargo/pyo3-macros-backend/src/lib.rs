@@ -19,6 +19,8 @@ mod konst;
 mod method;
 mod module;
 mod params;
+#[cfg(feature = "experimental-inspect")]
+mod py_expr;
 mod pyclass;
 mod pyfunction;
 mod pyimpl;

@@ -1,7 +1,12 @@
+use crate::conversion::IntoPyObject;
+use crate::ffi_ptr_ext::FfiPtrExt;
+#[cfg(feature = "experimental-inspect")]
+use crate::inspect::PyStaticExpr;
 use crate::instance::Bound;
 #[cfg(Py_3_11)]
 use crate::intern;
 use crate::panic::PanicException;
+use crate::py_result_ext::PyResultExt;
 use crate::type_object::PyTypeInfo;
 use crate::types::any::PyAnyMethods;
 #[cfg(Py_3_11)]
@@ -12,17 +17,14 @@ use crate::types::{
 };
 use crate::{exceptions::PyBaseException, ffi};
 use crate::{BoundObject, Py, PyAny, Python};
+use err_state::{PyErrState, PyErrStateLazyFnOutput, PyErrStateNormalized};
+use std::convert::Infallible;
 use std::ffi::CStr;
 
 mod cast_error;
 mod downcast_error;
 mod err_state;
 mod impls;
-
-use crate::conversion::IntoPyObject;
-use err_state::{PyErrState, PyErrStateLazyFnOutput, PyErrStateNormalized};
-use std::convert::Infallible;
-use std::ptr;
 
 pub use cast_error::{CastError, CastIntoError};
 #[allow(deprecated)]
@@ -277,27 +279,29 @@ impl PyErr {
     /// from a C FFI function, use [`PyErr::fetch`].
     pub fn take(py: Python<'_>) -> Option<PyErr> {
         let state = PyErrStateNormalized::take(py)?;
-        let pvalue = state.pvalue.bind(py);
-        if ptr::eq(
-            pvalue.get_type().as_ptr(),
-            PanicException::type_object_raw(py).cast(),
-        ) {
-            let msg: String = pvalue
-                .str()
-                .map(|py_str| py_str.to_string_lossy().into())
-                .unwrap_or_else(|_| String::from("Unwrapped panic from Python code"));
-            Self::print_panic_and_unwind(py, PyErrState::normalized(state), msg)
+
+        if PanicException::is_exact_type_of(state.pvalue.bind(py)) {
+            Self::print_panic_and_unwind(py, state)
         }
 
         Some(PyErr::from_state(PyErrState::normalized(state)))
     }
 
-    fn print_panic_and_unwind(py: Python<'_>, state: PyErrState, msg: String) -> ! {
+    #[cold]
+    fn print_panic_and_unwind(py: Python<'_>, state: PyErrStateNormalized) -> ! {
+        let msg: String = state
+            .pvalue
+            .bind(py)
+            .str()
+            .map(|py_str| py_str.to_string_lossy().into())
+            .unwrap_or_else(|_| String::from("Unwrapped panic from Python code"));
+
         eprintln!("--- PyO3 is resuming a panic after fetching a PanicException from Python. ---");
         eprintln!("Python stack trace below:");
 
-        state.restore(py);
+        PyErrState::normalized(state).restore(py);
 
+        // SAFETY: thread is attached and error was just set in the interpreter
         unsafe {
             ffi::PyErr_PrintEx(0);
         }
@@ -319,14 +323,7 @@ impl PyErr {
     #[cfg_attr(debug_assertions, track_caller)]
     #[inline]
     pub fn fetch(py: Python<'_>) -> PyErr {
-        const FAILED_TO_FETCH: &str = "attempted to fetch exception but none was set";
-        match PyErr::take(py) {
-            Some(err) => err,
-            #[cfg(debug_assertions)]
-            None => panic!("{}", FAILED_TO_FETCH),
-            #[cfg(not(debug_assertions))]
-            None => crate::exceptions::PySystemError::new_err(FAILED_TO_FETCH),
-        }
+        PyErr::take(py).unwrap_or_else(failed_to_fetch)
     }
 
     /// Creates a new exception type with the given name and docstring.
@@ -361,9 +358,14 @@ impl PyErr {
             None => std::ptr::null(),
         };
 
-        let ptr = unsafe { ffi::PyErr_NewExceptionWithDoc(name.as_ptr(), doc_ptr, base, dict) };
-
-        unsafe { Py::from_owned_ptr_or_err(py, ptr) }
+        // SAFETY: correct call to FFI function, return value is known to be a new
+        // exception type or null on error
+        unsafe {
+            ffi::PyErr_NewExceptionWithDoc(name.as_ptr(), doc_ptr, base, dict)
+                .assume_owned_or_err(py)
+                .cast_into_unchecked()
+        }
+        .map(Bound::unbind)
     }
 
     /// Prints a standard traceback to `sys.stderr`.
@@ -490,7 +492,7 @@ impl PyErr {
     /// # fn main() -> PyResult<()> {
     /// Python::attach(|py| {
     ///     let user_warning = py.get_type::<pyo3::exceptions::PyUserWarning>();
-    ///     PyErr::warn(py, &user_warning, c_str!("I am warning you"), 0)?;
+    ///     PyErr::warn(py, &user_warning, c"I am warning you", 0)?;
     ///     Ok(())
     /// })
     /// # }
@@ -620,6 +622,19 @@ impl PyErr {
     }
 }
 
+/// Called when `PyErr::fetch` is called but no exception is set.
+#[cold]
+#[cfg_attr(debug_assertions, track_caller)]
+fn failed_to_fetch() -> PyErr {
+    const FAILED_TO_FETCH: &str = "attempted to fetch exception but none was set";
+
+    if cfg!(debug_assertions) {
+        panic!("{}", FAILED_TO_FETCH)
+    } else {
+        crate::exceptions::PySystemError::new_err(FAILED_TO_FETCH)
+    }
+}
+
 impl std::fmt::Debug for PyErr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         Python::attach(|py| {
@@ -667,6 +682,9 @@ impl<'py> IntoPyObject<'py> for PyErr {
     type Output = Bound<'py, Self::Target>;
     type Error = Infallible;
 
+    #[cfg(feature = "experimental-inspect")]
+    const OUTPUT_TYPE: PyStaticExpr = PyBaseException::TYPE_HINT;
+
     #[inline]
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         Ok(self.into_value(py).into_bound(py))
@@ -677,6 +695,9 @@ impl<'py> IntoPyObject<'py> for &PyErr {
     type Target = PyBaseException;
     type Output = Bound<'py, Self::Target>;
     type Error = Infallible;
+
+    #[cfg(feature = "experimental-inspect")]
+    const OUTPUT_TYPE: PyStaticExpr = PyErr::OUTPUT_TYPE;
 
     #[inline]
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
@@ -700,14 +721,6 @@ where
     fn from(err: Bound<'py, T>) -> PyErr {
         PyErr::from_value(err.into_any())
     }
-}
-
-#[track_caller]
-pub fn panic_after_error(_py: Python<'_>) -> ! {
-    unsafe {
-        ffi::PyErr_Print();
-    }
-    panic!("Python API call failed");
 }
 
 /// Returns Ok if the error code is not -1.
@@ -745,7 +758,7 @@ mod tests {
     use crate::exceptions::{self, PyTypeError, PyValueError};
     use crate::impl_::pyclass::{value_of, IsSend, IsSync};
     use crate::test_utils::assert_warnings;
-    use crate::{ffi, PyErr, PyTypeInfo, Python};
+    use crate::{PyErr, PyTypeInfo, Python};
 
     #[test]
     fn no_error() {
@@ -836,7 +849,7 @@ mod tests {
 
         Python::attach(|py| {
             let err = py
-                .run(ffi::c_str!("raise Exception('banana')"), None, None)
+                .run(c"raise Exception('banana')", None, None)
                 .expect_err("raising should have given us an error");
 
             let debug_str = format!("{err:?}");
@@ -862,7 +875,7 @@ mod tests {
     fn err_display() {
         Python::attach(|py| {
             let err = py
-                .run(ffi::c_str!("raise Exception('banana')"), None, None)
+                .run(c"raise Exception('banana')", None, None)
                 .expect_err("raising should have given us an error");
             assert_eq!(err.to_string(), "Exception: banana");
         });
@@ -902,13 +915,13 @@ mod tests {
     fn test_pyerr_cause() {
         Python::attach(|py| {
             let err = py
-                .run(ffi::c_str!("raise Exception('banana')"), None, None)
+                .run(c"raise Exception('banana')", None, None)
                 .expect_err("raising should have given us an error");
             assert!(err.cause(py).is_none());
 
             let err = py
                 .run(
-                    ffi::c_str!("raise Exception('banana') from Exception('apple')"),
+                    c"raise Exception('banana') from Exception('apple')",
                     None,
                     None,
                 )
@@ -946,7 +959,7 @@ mod tests {
             // First, test the warning is emitted
             assert_warnings!(
                 py,
-                { PyErr::warn(py, &cls, ffi::c_str!("I am warning you"), 0).unwrap() },
+                { PyErr::warn(py, &cls, c"I am warning you", 0).unwrap() },
                 [(exceptions::PyUserWarning, "I am warning you")]
             );
 
@@ -954,7 +967,7 @@ mod tests {
             warnings
                 .call_method1("simplefilter", ("error", &cls))
                 .unwrap();
-            PyErr::warn(py, &cls, ffi::c_str!("I am warning you"), 0).unwrap_err();
+            PyErr::warn(py, &cls, c"I am warning you", 0).unwrap_err();
 
             // Test with error for an explicit module
             warnings.call_method0("resetwarnings").unwrap();
@@ -965,15 +978,15 @@ mod tests {
             // This has the wrong module and will not raise, just be emitted
             assert_warnings!(
                 py,
-                { PyErr::warn(py, &cls, ffi::c_str!("I am warning you"), 0).unwrap() },
+                { PyErr::warn(py, &cls, c"I am warning you", 0).unwrap() },
                 [(exceptions::PyUserWarning, "I am warning you")]
             );
 
             let err = PyErr::warn_explicit(
                 py,
                 &cls,
-                ffi::c_str!("I am warning you"),
-                ffi::c_str!("pyo3test.py"),
+                c"I am warning you",
+                c"pyo3test.py",
                 427,
                 None,
                 None,

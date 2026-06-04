@@ -26,7 +26,7 @@ To work and develop PyO3, you need Python & Rust installed on your system.
 
 ### Testing, linting, etc. with nox
 
-[`Nox`][nox] is used to automate many of our CI tasks and can be used locally to handle verfication tasks as you code. We recommend running these actions via nox to make use of our prefered configuration options. You can install nox into your global python with pip: `pip install nox` or (recommended) with [`pipx`][pipx] `pip install pipx`, `pipx install nox`
+[`Nox`][nox] is used to automate many of our CI tasks and can be used locally to handle verification tasks as you code. We recommend running these actions via nox to make use of our preferred configuration options. You can install nox into your global python with pip: `pip install nox` or (recommended) with [`pipx`][pipx] `pip install pipx`, `pipx install nox`
 
 The main nox commands we have implemented are:
 
@@ -47,8 +47,13 @@ Use  `nox -l` to list the full set of subcommands you can run.
 
 PyO3 uses [`trybuild`][trybuild] to develop UI tests to capture error messages from the Rust compiler for some of the macro functionality.
 
-Because there are several feature combinations for these UI tests, when updating them all (e.g. for a new Rust compiler version) it may be helpful to use the `update-ui-tests` nox session:
+The Rust compiler's error output differs depending on whether the `rust-src` component is installed. PyO3's CI has `rust-src` installed, so you need it locally for your UI test output to match:
 
+```bash
+rustup component add rust-src
+```
+
+Because there are several feature combinations for these UI tests, when updating them all (e.g. for a new Rust compiler version) it may be helpful to use the `update-ui-tests` nox session:
 ```bash
 nox -s update-ui-tests
 ```

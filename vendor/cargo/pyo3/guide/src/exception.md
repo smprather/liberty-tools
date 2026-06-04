@@ -37,8 +37,7 @@ Python::attach(|py| {
 # }
 ```
 
-When using PyO3 to create an extension module, you can add the new exception to
-the module like this, so that it is importable from Python:
+When using PyO3 to create an extension module, you can add the new exception to the module like this, so that it is importable from Python:
 
 ```rust,no_run
 # fn main() {}
@@ -58,7 +57,8 @@ mod mymodule {
 
 ## Raising an exception
 
-As described in the [function error handling](./function/error-handling.md) chapter, to raise an exception from a `#[pyfunction]` or `#[pymethods]`, return an `Err(PyErr)`. PyO3 will automatically raise this exception for you when returning the result to Python.
+As described in the [function error handling](./function/error-handling.md) chapter, to raise an exception from a `#[pyfunction]` or `#[pymethods]`, return an `Err(PyErr)`.
+PyO3 will automatically raise this exception for you when returning the result to Python.
 
 You can also manually write and fetch errors in the Python interpreter's global state:
 
@@ -107,8 +107,7 @@ err.is_instance_of::<PyTypeError>(py);
 ## Using exceptions defined in Python code
 
 It is possible to use an exception defined in Python code as a native Rust type.
-The [`import_exception!`] macro allows importing a specific exception class and defines a Rust type
-for that exception.
+The [`import_exception!`] macro allows importing a specific exception class and defines a Rust type for that exception.
 
 ```rust,no_run
 #![allow(dead_code)]
@@ -126,8 +125,7 @@ fn tell(file: &Bound<'_, PyAny>) -> PyResult<u64> {
 }
 ```
 
-[`pyo3::exceptions`]({{#PYO3_DOCS_URL}}/pyo3/exceptions/index.html)
-defines exceptions for several standard library modules.
+[`pyo3::exceptions`]({{#PYO3_DOCS_URL}}/pyo3/exceptions/index.html) defines exceptions for several standard library modules.
 
 ## Creating more complex exceptions
 
@@ -135,7 +133,7 @@ If you need to create an exception with more complex behavior, you can also manu
 
 ```rust
 #![allow(dead_code)]
-# #[cfg(any(not(feature = "abi3")))] {
+# #[cfg(any(not(Py_LIMITED_API), Py_3_12))] {
 use pyo3::prelude::*;
 use pyo3::types::IntoPyDict;
 use pyo3::exceptions::PyException;

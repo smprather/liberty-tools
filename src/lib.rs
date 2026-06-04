@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct Document {
     #[pyo3(get)]
@@ -33,7 +33,7 @@ struct Document {
     bus_types: Vec<BusTypeData>,
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct Cell {
     #[pyo3(get)]
@@ -50,7 +50,7 @@ struct Cell {
     leakage_powers: Vec<LeakagePowerData>,
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct Pin {
     #[pyo3(get)]
@@ -71,7 +71,7 @@ struct Pin {
 /// An `internal_power` group. Despite the Liberty name, the table values are
 /// switching **energy** (joules in SI), not power; scale = voltage * current *
 /// time unit (see `Document::energy_unit_joules`).
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct InternalPower {
     #[pyo3(get)]
@@ -83,7 +83,7 @@ struct InternalPower {
     tables: Vec<TimingTableData>,
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct Bus {
     #[pyo3(get)]
@@ -98,7 +98,7 @@ struct Bus {
     timing_arcs: Vec<TimingArcData>,
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct Bundle {
     #[pyo3(get)]
@@ -113,7 +113,7 @@ struct Bundle {
     timing_arcs: Vec<TimingArcData>,
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct BusType {
     #[pyo3(get)]
@@ -121,7 +121,7 @@ struct BusType {
     attributes: Vec<(String, String)>,
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct TimingArc {
     #[pyo3(get)]
@@ -137,7 +137,7 @@ struct TimingArc {
     tables: Vec<TimingTableData>,
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct TimingTable {
     #[pyo3(get)]
@@ -186,7 +186,7 @@ struct LeakagePowerData {
     related_pg_pin: Option<String>,
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct LeakagePower {
     #[pyo3(get)]
@@ -240,7 +240,7 @@ struct LatchData {
     preset: Option<String>,
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct Ff {
     #[pyo3(get)]
@@ -298,7 +298,7 @@ impl Ff {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct Latch {
     #[pyo3(get)]
@@ -844,7 +844,7 @@ impl Cell {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct DynamicCurrent {
     #[pyo3(get)]
@@ -883,7 +883,7 @@ impl DynamicCurrent {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct SwitchingGroup {
     #[pyo3(get)]
@@ -924,7 +924,7 @@ impl SwitchingGroup {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct PgCurrent {
     #[pyo3(get)]
@@ -1827,7 +1827,7 @@ fn minimized_sop(expr: &BoolExpr, mentioned: &[String], canonical: &str) -> Stri
 /// (compact, human-readable); equality/hashing use the canonical sum-of-minterms
 /// over the support, so `==` is true exactly when two expressions are logically
 /// equivalent.
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct BooleanExpression {
     source: String,

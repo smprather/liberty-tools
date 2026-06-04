@@ -99,6 +99,11 @@ impl AttachGuard {
             return Err(AttachError::NotInitialized);
         }
 
+        // Py_IsInitialized() can return 1 while Py_InitializeEx is still
+        // running (e.g. importing site.py). Block until any in-progress PyO3
+        // initialization has fully completed.
+        crate::interpreter_lifecycle::wait_for_initialization();
+
         // Calling `PyGILState_Ensure` while finalizing may crash CPython in unpredictable
         // ways, we'll make a best effort attempt here to avoid that. (There's a time of
         // check to time-of-use issue, but it's better than nothing.)
@@ -362,12 +367,10 @@ fn decrement_attach_count() {
 mod tests {
     use super::*;
 
-    use crate::{ffi, types::PyAnyMethods, Py, PyAny, Python};
+    use crate::{types::PyAnyMethods, Py, PyAny, Python};
 
     fn get_object(py: Python<'_>) -> Py<PyAny> {
-        py.eval(ffi::c_str!("object()"), None, None)
-            .unwrap()
-            .unbind()
+        py.eval(c"object()", None, None).unwrap().unbind()
     }
 
     #[cfg(not(pyo3_disable_reference_pool))]
@@ -446,7 +449,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn test_attach_counts() {
         // Check `attach` and AttachGuard both increase counts correctly
         let get_attach_count = || ATTACH_COUNT.with(|c| c.get());
@@ -513,7 +515,7 @@ mod tests {
     #[test]
     fn recursive_attach_ok() {
         Python::attach(|py| {
-            let obj = Python::attach(|_| py.eval(ffi::c_str!("object()"), None, None).unwrap());
+            let obj = Python::attach(|_| py.eval(c"object()", None, None).unwrap());
             assert_eq!(obj.get_refcnt(), 1);
         })
     }
@@ -526,7 +528,7 @@ mod tests {
             let count = obj.get_refcnt(py);
 
             // Cloning when attached should increase reference count immediately
-            #[allow(clippy::redundant_clone)]
+            #[expect(clippy::redundant_clone)]
             let c = obj.clone();
             assert_eq!(count + 1, c.get_refcnt(py));
         })
@@ -550,7 +552,9 @@ mod tests {
 
                 // Rebuild obj so that it can be dropped
                 unsafe {
-                    Py::<PyAny>::from_owned_ptr(
+                    use crate::Bound;
+
+                    Bound::from_owned_ptr(
                         pool.python(),
                         ffi::PyCapsule_GetPointer(capsule, std::ptr::null()) as _,
                     )

@@ -11,9 +11,9 @@
 
 [package]
 edition = "2021"
-rust-version = "1.74"
+rust-version = "1.83"
 name = "pyo3"
-version = "0.27.2"
+version = "0.28.3"
 authors = ["PyO3 Project and Contributors <https://github.com/PyO3>"]
 build = "build.rs"
 exclude = [
@@ -153,11 +153,7 @@ full = [
     "uuid",
 ]
 generate-import-lib = ["pyo3-ffi/generate-import-lib"]
-macros = [
-    "pyo3-macros",
-    "indoc",
-    "unindent",
-]
+macros = ["pyo3-macros"]
 multiple-pymethods = [
     "inventory",
     "pyo3-macros/multiple-pymethods",
@@ -222,6 +218,10 @@ name = "test_class_formatting"
 path = "tests/test_class_formatting.rs"
 
 [[test]]
+name = "test_class_init"
+path = "tests/test_class_init.rs"
+
+[[test]]
 name = "test_class_new"
 path = "tests/test_class_new.rs"
 
@@ -276,6 +276,10 @@ path = "tests/test_getter_setter.rs"
 [[test]]
 name = "test_inheritance"
 path = "tests/test_inheritance.rs"
+
+[[test]]
+name = "test_init_race"
+path = "tests/test_init_race.rs"
 
 [[test]]
 name = "test_intopyobject"
@@ -401,10 +405,6 @@ optional = true
 version = ">= 2.5.0, < 3"
 optional = true
 
-[dependencies.indoc]
-version = "2.0.1"
-optional = true
-
 [dependencies.inventory]
 version = "0.3.5"
 optional = true
@@ -420,9 +420,6 @@ version = "0.2.62"
 [dependencies.lock_api]
 version = "0.4"
 optional = true
-
-[dependencies.memoffset]
-version = "0.9"
 
 [dependencies.num-bigint]
 version = "0.4.4"
@@ -453,10 +450,10 @@ version = "0.12"
 optional = true
 
 [dependencies.pyo3-ffi]
-version = "=0.27.2"
+version = "=0.28.3"
 
 [dependencies.pyo3-macros]
-version = "=0.27.2"
+version = "=0.28.3"
 optional = true
 
 [dependencies.rust_decimal]
@@ -477,12 +474,8 @@ version = "0.3.38"
 optional = true
 default-features = false
 
-[dependencies.unindent]
-version = "0.2.1"
-optional = true
-
 [dependencies.uuid]
-version = "1.11.0"
+version = "1.12.0"
 optional = true
 
 [dev-dependencies.assert_approx_eq]
@@ -526,14 +519,14 @@ version = "1.1.0"
 version = "3.12.0"
 
 [dev-dependencies.trybuild]
-version = ">=1.0.70"
+version = ">=1.0.115"
 
 [dev-dependencies.uuid]
 version = "1.10.0"
 features = ["v4"]
 
 [build-dependencies.pyo3-build-config]
-version = "=0.27.2"
+version = "=0.28.3"
 features = ["resolve-config"]
 
 [target.'cfg(not(target_has_atomic = "64"))'.dependencies.portable-atomic]

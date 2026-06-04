@@ -11,9 +11,9 @@
 
 [package]
 edition = "2021"
-rust-version = "1.74"
+rust-version = "1.83"
 name = "pyo3-build-config"
-version = "0.27.2"
+version = "0.28.3"
 authors = ["PyO3 Project and Contributors <https://github.com/PyO3>"]
 build = "build.rs"
 autolib = false
@@ -64,11 +64,11 @@ version = "0.2.12"
 optional = true
 
 [dependencies.target-lexicon]
-version = "0.13"
+version = "0.13.3"
 
 [build-dependencies.python3-dll-a]
 version = "0.2.12"
 optional = true
 
 [build-dependencies.target-lexicon]
-version = "0.13"
+version = "0.13.3"

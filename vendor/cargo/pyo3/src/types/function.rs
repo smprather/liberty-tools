@@ -19,7 +19,7 @@ use std::ptr::NonNull;
 #[repr(transparent)]
 pub struct PyCFunction(PyAny);
 
-pyobject_native_type_core!(PyCFunction, pyobject_native_static_type_object!(ffi::PyCFunction_Type), #checkfunction=ffi::PyCFunction_Check);
+pyobject_native_type_core!(PyCFunction, pyobject_native_static_type_object!(ffi::PyCFunction_Type), "builtins", "builtin_function_or_method", #checkfunction=ffi::PyCFunction_Check);
 
 impl PyCFunction {
     /// Create a new built-in function with keywords (*args and/or **kwargs).
@@ -85,8 +85,8 @@ impl PyCFunction {
         F: Fn(&Bound<'_, PyTuple>, Option<&Bound<'_, PyDict>>) -> R + Send + 'static,
         for<'p> R: crate::impl_::callback::IntoPyCallbackOutput<'p, *mut ffi::PyObject>,
     {
-        let name = name.unwrap_or(ffi::c_str!("pyo3-closure"));
-        let doc = doc.unwrap_or(ffi::c_str!(""));
+        let name = name.unwrap_or(c"pyo3-closure");
+        let doc = doc.unwrap_or(c"");
         let method_def =
             pymethods::PyMethodDef::cfunction_with_keywords(name, run_closure::<F, R>, doc);
         let def = method_def.into_raw();
@@ -117,7 +117,7 @@ impl PyCFunction {
     }
 }
 
-static CLOSURE_CAPSULE_NAME: &CStr = ffi::c_str!("pyo3-closure");
+static CLOSURE_CAPSULE_NAME: &CStr = c"pyo3-closure";
 
 unsafe extern "C" fn run_closure<F, R>(
     capsule_ptr: *mut ffi::PyObject,
@@ -129,7 +129,7 @@ where
     for<'py> R: crate::impl_::callback::IntoPyCallbackOutput<'py, *mut ffi::PyObject>,
 {
     unsafe {
-        crate::impl_::trampoline::cfunction_with_keywords(
+        crate::impl_::trampoline::cfunction_with_keywords::inner(
             capsule_ptr,
             args,
             kwargs,
@@ -167,4 +167,4 @@ unsafe impl<F: Send> Send for ClosureDestructor<F> {}
 pub struct PyFunction(PyAny);
 
 #[cfg(not(Py_LIMITED_API))]
-pyobject_native_type_core!(PyFunction, pyobject_native_static_type_object!(ffi::PyFunction_Type), #checkfunction=ffi::PyFunction_Check);
+pyobject_native_type_core!(PyFunction, pyobject_native_static_type_object!(ffi::PyFunction_Type), "builtins", "function", #checkfunction=ffi::PyFunction_Check);

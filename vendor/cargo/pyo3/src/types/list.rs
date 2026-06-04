@@ -19,7 +19,22 @@ use std::num::NonZero;
 #[repr(transparent)]
 pub struct PyList(PyAny);
 
-pyobject_native_type_core!(PyList, pyobject_native_static_type_object!(ffi::PyList_Type), #checkfunction=ffi::PyList_Check);
+pyobject_native_type_core!(
+    PyList,
+    pyobject_native_static_type_object!(ffi::PyList_Type),
+    "builtins", "list",
+    #checkfunction=ffi::PyList_Check
+);
+
+#[cfg(Py_3_12)]
+impl crate::impl_::pyclass::PyClassBaseType for PyList {
+    type LayoutAsBase = crate::impl_::pycell::PyVariableClassObjectBase;
+    type BaseNativeType = Self;
+    type Initializer = crate::impl_::pyclass_init::PyNativeTypeInitializer<Self>;
+    type PyClassMutability = crate::pycell::impl_::ImmutableClass;
+    type Layout<T: crate::impl_::pyclass::PyClassImpl> =
+        crate::impl_::pycell::PyVariableClassObject<T>;
+}
 
 #[inline]
 #[track_caller]
@@ -427,7 +442,9 @@ impl<'py> PyListMethods<'py> for Bound<'py, PyList> {
     where
         F: Fn(Bound<'py, PyAny>) -> PyResult<()>,
     {
-        crate::sync::with_critical_section(self, || self.iter().try_for_each(closure))
+        crate::sync::critical_section::with_critical_section(self, || {
+            self.iter().try_for_each(closure)
+        })
     }
 
     /// Sorts the list in-place. Equivalent to the Python expression `l.sort()`.
@@ -626,7 +643,7 @@ impl<'py> BoundListIterator<'py> {
             length,
             list,
         } = self;
-        crate::sync::with_critical_section(list, || f(index, length, list))
+        crate::sync::critical_section::with_critical_section(list, || f(index, length, list))
     }
 }
 
@@ -945,7 +962,7 @@ mod tests {
     use crate::types::list::PyListMethods;
     use crate::types::sequence::PySequenceMethods;
     use crate::types::{PyList, PyTuple};
-    use crate::{ffi, IntoPyObject, PyResult, Python};
+    use crate::{IntoPyObject, PyResult, Python};
     #[cfg(feature = "nightly")]
     use std::num::NonZero;
 
@@ -1006,7 +1023,7 @@ mod tests {
     #[test]
     fn test_set_item_refcnt() {
         Python::attach(|py| {
-            let obj = py.eval(ffi::c_str!("object()"), None, None).unwrap();
+            let obj = py.eval(c"object()", None, None).unwrap();
             let cnt;
             {
                 let v = vec![2];
@@ -1041,7 +1058,7 @@ mod tests {
     fn test_insert_refcnt() {
         Python::attach(|py| {
             let cnt;
-            let obj = py.eval(ffi::c_str!("object()"), None, None).unwrap();
+            let obj = py.eval(c"object()", None, None).unwrap();
             {
                 let list = PyList::empty(py);
                 cnt = obj.get_refcnt();
@@ -1066,7 +1083,7 @@ mod tests {
     fn test_append_refcnt() {
         Python::attach(|py| {
             let cnt;
-            let obj = py.eval(ffi::c_str!("object()"), None, None).unwrap();
+            let obj = py.eval(c"object()", None, None).unwrap();
             {
                 let list = PyList::empty(py);
                 cnt = obj.get_refcnt();
@@ -1542,6 +1559,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(panic = "unwind")]
     fn bad_intopyobject_doesnt_cause_leaks() {
         use crate::types::PyInt;
         use std::convert::Infallible;

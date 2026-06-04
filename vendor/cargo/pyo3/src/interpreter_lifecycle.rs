@@ -19,14 +19,6 @@ pub(crate) fn initialize() {
     });
 }
 
-/// See [Python::initialize]
-#[cfg(not(any(PyPy, GraalPy)))]
-#[inline]
-#[deprecated(note = "use `Python::initialize` instead", since = "0.26.0")]
-pub fn prepare_freethreaded_python() {
-    initialize();
-}
-
 /// Executes the provided closure with an embedded Python interpreter.
 ///
 /// This function initializes the Python interpreter, executes the provided closure, and then
@@ -51,7 +43,7 @@ pub fn prepare_freethreaded_python() {
 /// ```rust
 /// unsafe {
 ///     pyo3::with_embedded_python_interpreter(|py| {
-///         if let Err(e) = py.run(pyo3::ffi::c_str!("print('Hello World')"), None, None) {
+///         if let Err(e) = py.run(c"print('Hello World')", None, None) {
 ///             // We must make sure to not return a `PyErr`!
 ///             e.print(py);
 ///         }
@@ -86,6 +78,28 @@ where
     unsafe { ffi::Py_Finalize() };
 
     result
+}
+
+/// If PyO3 is currently running `Py_InitializeEx` inside the `Once` guard,
+/// block until it completes. Needed because `Py_InitializeEx` sets the
+/// `initialized` flag in the interpreter to true before it finishes all its
+/// steps (in particular, before it imports `site.py`).
+///
+/// This must only be called after `Py_IsInitialized()` has returned true.
+///
+/// If the `Once` was never started (e.g. the interpreter was initialized
+/// externally, not through PyO3), `call_once` runs the empty closure and
+/// returns — this is fine because `initialize()` checks
+/// `Py_IsInitialized()` inside its closure and skips `Py_InitializeEx` if
+/// the interpreter is already running. If the `Once` is currently in
+/// progress (another thread is inside `initialize()`), `call_once` blocks
+/// until it completes.
+pub(crate) fn wait_for_initialization() {
+    // TODO: use START.wait_force() on MSRV 1.86
+    // TODO: may not be needed on Python 3.15 (https://github.com/python/cpython/pull/146303)
+    START.call_once(|| {
+        assert_ne!(unsafe { crate::ffi::Py_IsInitialized() }, 0);
+    });
 }
 
 pub(crate) fn ensure_initialized() {
