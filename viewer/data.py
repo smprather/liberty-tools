@@ -302,6 +302,7 @@ class LibertyData:
             "type": "cell",
             "meta": {"area": cell.area},
             "attributes": _fmt_attr_rows(cell.attributes()),
+            "pg_pins": self._pg_pin_table(cell),
             "src": _path_src([], f"{cell_name} · cell"),
             "children": [],
         }
@@ -346,6 +347,22 @@ class LibertyData:
         _propagate_src(node, node["src"])
         return node
 
+    def _pg_pin_table(self, cell: lt.Cell) -> dict[str, Any] | None:
+        """The cell's `pg_pin` groups as a table: rows are pg pins, columns the
+        ordered union of their attributes (pg_type, voltage_name, …)."""
+        pgs = cell.pg_pins()
+        if not pgs:
+            return None
+        cols: list[str] = []
+        rows = []
+        for pg in pgs:
+            attrs = dict(pg.attributes())
+            for k in attrs:
+                if k not in cols:
+                    cols.append(k)
+            rows.append({"name": pg.name, "values": attrs})
+        return {"cols": cols, "rows": rows}
+
     def _leakage_node(self, cell: lt.Cell, cell_name: str) -> dict[str, Any] | None:
         """`leakage_power` as a single when-condition × power-rail table node.
 
@@ -377,6 +394,9 @@ class LibertyData:
                 "pg_pins": cols,
                 "rows": [{"when": k, "values": rows[k]} for k in order],
             },
+            "src": _path_src(
+                [_step("leakage_power", indices=list(range(len(lps))))], "leakage_power"
+            ),
             "children": [],
         }
 
@@ -396,6 +416,9 @@ class LibertyData:
                         "related_outputs": dc.related_outputs,
                         "when": dc.when,
                     }
+                ),
+                "src": _path_src(
+                    [_step("dynamic_current", indices=[dci])], "dynamic_current"
                 ),
                 "children": [],
             }

@@ -11,6 +11,29 @@ const PLOT_H = 320;
 // White grid/lines for the 3D scene axes.
 const GRID_WHITE = { gridcolor: "#ffffff", zerolinecolor: "#ffffff", linecolor: "#ffffff" };
 
+// Liberty groups the viewer actually RENDERS (tree node or table). The source
+// pane strips only these out of a parent's text — they're shown elsewhere — so
+// each source view shows only the data rendered for that selection. Everything
+// the viewer does NOT display (ff/latch/statetable, pg_pin's own attrs, unknown
+// groups, plain attributes) is left in, since the source is the only place to
+// see it. pg_pin (shown in the cell table) and vector/switching_group/pg_current
+// (part of a CCS table's own display) are intentionally NOT stripped.
+const NAV_GROUPS = new Set([
+  "pin", "bus", "bundle", "dynamic_current", "leakage_power",
+  "timing", "internal_power",
+  "cell_rise", "cell_fall", "rise_transition", "fall_transition",
+  "rise_constraint", "fall_constraint", "retaining_rise", "retaining_fall",
+  "retain_rise_slew", "retain_fall_slew", "cell_degradation",
+  "rise_power", "fall_power", "output_current_rise", "output_current_fall",
+  "receiver_capacitance", "receiver_capacitance1_rise", "receiver_capacitance1_fall",
+  "receiver_capacitance2_rise", "receiver_capacitance2_fall",
+]);
+
+// Groups that hold raw float data the viewer does NOT yet display (so they
+// belong in the source, but they're huge) — collapsed FIRST when over budget.
+const UNDISPLAYED_DATA = new Set(["ccsn_first_stage", "ccsn_last_stage"]);
+const SOURCE_MAX_LINES = 1000;
+
 async function api(path) {
   const res = await fetch(path);
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
@@ -123,7 +146,9 @@ function cellNode(name) {
   row.ondblclick = toggle;
   row.onclick = async () => {
     selectRow(li);
-    renderAttrs(await ensure());
+    const cd = await ensure();
+    renderAttrs(cd);
+    if (cd.pg_pins) renderPgPins(cd.pg_pins);
     showSource(name, { kind: "path", path: [], label: `${name} · cell` });
     setCrumb([LIB_NAME, name]);
   };
@@ -220,6 +245,26 @@ function renderAttrs(node) {
   t.innerHTML =
     "<tr><th>attribute</th><th>value</th></tr>" +
     attrs.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
+  view.appendChild(t);
+}
+
+// pg_pin groups as a table (appended below the cell attributes).
+function renderPgPins(d) {
+  const view = document.getElementById("view");
+  const t = document.createElement("table");
+  t.className = "attrs";
+  t.innerHTML =
+    "<tr><th>pg_pin</th>" +
+    d.cols.map((c) => `<th>${c}</th>`).join("") +
+    "</tr>" +
+    d.rows
+      .map(
+        (r) =>
+          `<tr><th>${r.name}</th>` +
+          d.cols.map((c) => `<td>${r.values[c] ?? ""}</td>`).join("") +
+          "</tr>"
+      )
+      .join("");
   view.appendChild(t);
 }
 
@@ -751,6 +796,148 @@ function _highlight(text) {
   return out;
 }
 
+// Strip child groups (one brace level into each top-level block) whose keyword
+// is in `nav` — they're shown elsewhere in the display. Single pass, brace-/
+// string-/comment-aware.
+function _stripNavGroups(text, nav) {
+  const n = text.length;
+  const parts = [];
+  let copyFrom = 0;
+  let i = 0;
+  let depth = 0;
+  while (i < n) {
+    const c = text[i];
+    const d = text[i + 1];
+    if (c === '"') { i++; while (i < n && text[i] !== '"') i += text[i] === "\\" ? 2 : 1; i++; continue; }
+    if (c === "#") { while (i < n && text[i] !== "\n") i++; continue; }
+    if (c === "/" && d === "/") { while (i < n && text[i] !== "\n") i++; continue; }
+    if (c === "/" && d === "*") { const j = text.indexOf("*/", i); i = j < 0 ? n : j + 2; continue; }
+    if (depth === 1 && /[A-Za-z_]/.test(c)) {
+      let j = i + 1;
+      while (j < n && /\w/.test(text[j])) j++;
+      const word = text.slice(i, j);
+      let k = j;
+      while (k < n && (text[k] === " " || text[k] === "\t" || text[k] === "\n")) k++;
+      if (text[k] === "(" && nav.has(word)) {
+        let p = k + 1;
+        while (p < n && text[p] !== ")") p++;
+        let q = p + 1;
+        while (q < n && (text[q] === " " || text[q] === "\t" || text[q] === "\n")) q++;
+        if (text[q] === "{") {
+          const gEnd = _matchBrace(text, q);
+          let e = gEnd < 0 ? n : gEnd + 1;
+          while (e < n && (text[e] === ";" || text[e] === " " || text[e] === "\t")) e++;
+          let lineStart = i;
+          while (lineStart > copyFrom && (text[lineStart - 1] === " " || text[lineStart - 1] === "\t")) lineStart--;
+          parts.push(text.slice(copyFrom, lineStart));
+          if (text[e] === "\n") e++;
+          copyFrom = e;
+          i = e;
+          continue;
+        }
+      }
+      i = j;
+      continue;
+    }
+    if (c === "{") depth++;
+    else if (c === "}") depth--;
+    i++;
+  }
+  parts.push(text.slice(copyFrom));
+  return parts.join("");
+}
+
+// Parse every `{}` group: {open, close, depth (0 = top-level block), word
+// (header keyword)}. Brace-/string-/comment-aware.
+function _parseGroups(text) {
+  const n = text.length;
+  const groups = [];
+  const stack = [];
+  let i = 0;
+  let depth = 0;
+  while (i < n) {
+    const c = text[i];
+    const d = text[i + 1];
+    if (c === '"') { i++; while (i < n && text[i] !== '"') i += text[i] === "\\" ? 2 : 1; i++; continue; }
+    if (c === "#") { while (i < n && text[i] !== "\n") i++; continue; }
+    if (c === "/" && d === "/") { while (i < n && text[i] !== "\n") i++; continue; }
+    if (c === "/" && d === "*") { const j = text.indexOf("*/", i); i = j < 0 ? n : j + 2; continue; }
+    if (c === "{") { stack.push({ open: i, level: depth }); depth++; i++; continue; }
+    if (c === "}") {
+      const g = stack.pop();
+      depth--;
+      if (g) {
+        const head = text.slice(Math.max(0, g.open - 400), g.open);
+        const m = /([A-Za-z_]\w*)[ \t]*\([^)]*\)[ \t\n]*$/.exec(head);
+        groups.push({ open: g.open, close: i, depth: g.level, word: m ? m[1] : "" });
+      }
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return groups;
+}
+
+function _newlines(text, a, b) {
+  let c = 0;
+  for (let i = a; i <= b && i < text.length; i++) if (text[i] === "\n") c++;
+  return c;
+}
+
+// Replace each group's `{ … }` body with a one-line placeholder. `groups` must
+// be non-overlapping (outermost). Header line is preserved.
+function _spliceCollapse(text, groups) {
+  const gs = groups.slice().sort((a, b) => a.open - b.open);
+  let out = "";
+  let pos = 0;
+  for (const g of gs) {
+    if (g.open < pos) continue;
+    out += text.slice(pos, g.open);
+    out += `{ /* ${_newlines(text, g.open, g.close)} lines collapsed */ }`;
+    pos = g.close + 1;
+  }
+  return out + text.slice(pos);
+}
+
+function _lineCount(text) {
+  return text.split("\n").length;
+}
+
+// Keep the source pane under `budget` lines. First collapse undisplayed raw-data
+// groups (CCSN); if still over, collapse general groups deepest-first.
+function _collapseToBudget(text, budget) {
+  if (_lineCount(text) <= budget) return text;
+
+  // Pass 1: collapse undisplayed-data groups (outermost matches).
+  let groups = _parseGroups(text);
+  let data = groups.filter((g) => UNDISPLAYED_DATA.has(g.word));
+  data = data.filter((g) => !data.some((o) => o !== g && o.open < g.open && o.close > g.close));
+  if (data.length) {
+    text = _spliceCollapse(text, data);
+    if (_lineCount(text) <= budget) return text;
+    groups = _parseGroups(text);
+  }
+
+  // Pass 2: deepest-first. Pick the largest depth T whose collapse fits.
+  const total = _lineCount(text);
+  const maxDepth = groups.reduce((m, g) => Math.max(m, g.depth), 0);
+  for (let t = maxDepth; t >= 1; t--) {
+    const cand = groups.filter((g) => g.depth === t);
+    const saved = cand.reduce((s, g) => s + _newlines(text, g.open, g.close), 0);
+    if (total - saved <= budget) return _spliceCollapse(text, cand);
+  }
+
+  // Fallback: collapse depth-1, then hard-truncate any remainder.
+  const d1 = groups.filter((g) => g.depth === 1);
+  if (d1.length) text = _spliceCollapse(text, d1);
+  const lines = text.split("\n");
+  if (lines.length > budget) {
+    text = lines.slice(0, budget).join("\n") + `\n// … ${lines.length - budget} more lines …`;
+  }
+  return text;
+}
+
 async function showSource(cell, src) {
   src = src || { kind: "cell", name: cell };
   const sec = document.getElementById("source-section");
@@ -770,9 +957,14 @@ async function showSource(cell, src) {
   const path = (src && src.path) || [];
   title.textContent = "";  // label dropped to save vertical space
   const templates = (debugState.meta && debugState.meta.templates) || {};
-  let text = _annotateIndices(_walkPath(d.text, path), templates);
+  // Strip child groups shown elsewhere in the display; drop blank lines.
+  let text = _stripNavGroups(_walkPath(d.text, path), NAV_GROUPS);
+  text = text.split("\n").filter((l) => l.trim() !== "").join("\n");
+  text = _annotateIndices(text, templates);
   // Enforce a space after every comma, except before a line-continuation "\".
   text = text.replace(/,(?![\s\\])/g, ", ");
+  // Keep the pane bounded (CCSN etc. collapse first, then deepest-first).
+  text = _collapseToBudget(text, SOURCE_MAX_LINES);
   pre.innerHTML = _highlight(text);
 }
 

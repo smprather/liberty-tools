@@ -221,6 +221,10 @@ class Cell:
         """``leakage_power`` groups (state-dependent / default static leakage)."""
         return [LeakagePower(lp) for lp in self._native.leakage_powers()]
 
+    def pg_pins(self) -> list[PgPin]:
+        """``pg_pin`` groups (power/ground rails)."""
+        return [PgPin(pg) for pg in self._native.pg_pins()]
+
 
 class Pin:
     def __init__(self, native: _native.Pin):
@@ -536,6 +540,22 @@ class PgCurrent:
         return [TimingTable(v) for v in self._native.vectors()]
 
 
+class PgPin:
+    """A ``pg_pin`` group (power/ground rail): a name and its simple attributes
+    (``pg_type``, ``voltage_name``, …)."""
+
+    def __init__(self, native: _native.PgPin):
+        self._native = native
+
+    @property
+    def name(self) -> str:
+        return self._native.name
+
+    def attributes(self) -> list[tuple[str, str]]:
+        """Ordered ``(name, value)`` simple attributes of the pg_pin group."""
+        return self._native.attributes()
+
+
 class LeakagePower:
     """A ``leakage_power`` group: a static leakage ``value`` (library power
     units), optionally gated by a ``when`` state and tied to a power rail."""
@@ -793,6 +813,7 @@ __all__ = [
     "LibraryIndex",
     "Pin",
     "PgCurrent",
+    "PgPin",
     "SwitchingGroup",
     "TimingArc",
     "TimingTable",

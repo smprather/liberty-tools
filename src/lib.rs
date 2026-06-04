@@ -48,6 +48,7 @@ struct Cell {
     ff: Option<FfData>,
     latch: Option<LatchData>,
     leakage_powers: Vec<LeakagePowerData>,
+    pg_pins: Vec<PgPinData>,
 }
 
 #[pyclass(from_py_object)]
@@ -175,6 +176,40 @@ struct CellData {
     ff: Option<FfData>,
     latch: Option<LatchData>,
     leakage_powers: Vec<LeakagePowerData>,
+    pg_pins: Vec<PgPinData>,
+}
+
+/// A `pg_pin` group (power/ground rail): name + its simple attributes
+/// (pg_type, voltage_name, …).
+#[derive(Clone)]
+struct PgPinData {
+    name: String,
+    attributes: Vec<(String, String)>,
+}
+
+#[pyclass(from_py_object)]
+#[derive(Clone)]
+struct PgPin {
+    #[pyo3(get)]
+    name: String,
+    attributes: Vec<(String, String)>,
+}
+
+impl From<PgPinData> for PgPin {
+    fn from(value: PgPinData) -> Self {
+        Self {
+            name: value.name,
+            attributes: value.attributes,
+        }
+    }
+}
+
+#[pymethods]
+impl PgPin {
+    /// Ordered `(name, value)` simple attributes of the pg_pin group.
+    fn attributes(&self) -> Vec<(String, String)> {
+        self.attributes.clone()
+    }
 }
 
 /// A `leakage_power` group: a state-dependent (or default) static leakage value,
@@ -449,6 +484,7 @@ impl From<CellData> for Cell {
             ff: value.ff,
             latch: value.latch,
             leakage_powers: value.leakage_powers,
+            pg_pins: value.pg_pins,
         }
     }
 }
@@ -842,6 +878,11 @@ impl Cell {
             .map(LeakagePower::from)
             .collect()
     }
+
+    /// `pg_pin` groups (power/ground rails).
+    fn pg_pins(&self) -> Vec<PgPin> {
+        self.pg_pins.iter().cloned().map(PgPin::from).collect()
+    }
 }
 
 #[pyclass(from_py_object)]
@@ -1231,6 +1272,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Ff>()?;
     m.add_class::<Latch>()?;
     m.add_class::<LeakagePower>()?;
+    m.add_class::<PgPin>()?;
     m.add_function(wrap_pyfunction!(parse_file, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize_str, m)?)?;
@@ -2737,6 +2779,7 @@ impl Parser {
         let mut ff = None;
         let mut latch = None;
         let mut leakage_powers = Vec::new();
+        let mut pg_pins = Vec::new();
         while !self.consume_symbol(b'}')? {
             let item_name = self.take_word()?;
             if self.consume_symbol(b'(')? {
@@ -2774,6 +2817,11 @@ impl Parser {
                         "leakage_power" => {
                             leakage_powers.push(self.parse_leakage_power_body()?);
                         }
+                        "pg_pin" => {
+                            pg_pins.push(
+                                self.parse_pg_pin_body(args.first().cloned().unwrap_or_default())?,
+                            );
+                        }
                         _ => {
                             self.skip_group_body()?;
                         }
@@ -2804,7 +2852,30 @@ impl Parser {
             ff,
             latch,
             leakage_powers,
+            pg_pins,
         })
+    }
+
+    /// Parse a `pg_pin` body: capture its simple `name : value` attributes;
+    /// nested groups are skipped.
+    fn parse_pg_pin_body(&mut self, name: String) -> Result<PgPinData, ParseError> {
+        let mut attributes = Vec::new();
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b'(')? {
+                let _args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    self.skip_group_body()?;
+                }
+                self.consume_symbol(b';')?;
+            } else if self.consume_symbol(b':')? {
+                let value = self.read_simple_attribute_value()?;
+                attributes.push((item_name, value));
+            } else {
+                return Err(self.error_here("expected '(' or ':' in pg_pin"));
+            }
+        }
+        Ok(PgPinData { name, attributes })
     }
 
     /// Parse a `leakage_power` body: a `value` plus optional `when` /
