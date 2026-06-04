@@ -700,6 +700,57 @@ function _annotateIndices(text, templates) {
   );
 }
 
+function _escHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Minimal Liberty syntax highlighter -> HTML. Char-walk with string/comment
+// state so braces/commas inside quotes or comments aren't mis-tokenized.
+function _highlight(text) {
+  const n = text.length;
+  let out = "";
+  let i = 0;
+  const span = (cls, s) => `<span class="${cls}">${_escHtml(s)}</span>`;
+  while (i < n) {
+    const c = text[i];
+    const d = text[i + 1];
+    if (c === "#" || (c === "/" && d === "/")) {
+      let j = text.indexOf("\n", i);
+      if (j < 0) j = n;
+      out += span("tok-com", text.slice(i, j));
+      i = j;
+    } else if (c === "/" && d === "*") {
+      let j = text.indexOf("*/", i);
+      j = j < 0 ? n : j + 2;
+      out += span("tok-com", text.slice(i, j));
+      i = j;
+    } else if (c === '"') {
+      let j = i + 1;
+      while (j < n && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      j = Math.min(j + 1, n);
+      out += span("tok-str", text.slice(i, j));
+      i = j;
+    } else if (/[A-Za-z_]/.test(c)) {
+      let j = i + 1;
+      while (j < n && /[\w[\].]/.test(text[j])) j++;
+      const word = text.slice(i, j);
+      let k = j;
+      while (k < n && (text[k] === " " || text[k] === "\t")) k++;
+      out += text[k] === "(" || text[k] === ":" ? span("tok-key", word) : _escHtml(word);
+      i = j;
+    } else if (/[0-9]/.test(c) || (c === "-" && /[0-9.]/.test(d))) {
+      let j = i + 1;
+      while (j < n && /[0-9.eE+-]/.test(text[j])) j++;
+      out += span("tok-num", text.slice(i, j));
+      i = j;
+    } else {
+      out += _escHtml(c);
+      i++;
+    }
+  }
+  return out;
+}
+
 async function showSource(cell, src) {
   src = src || { kind: "cell", name: cell };
   const sec = document.getElementById("source-section");
@@ -719,7 +770,10 @@ async function showSource(cell, src) {
   const path = (src && src.path) || [];
   title.textContent = "";  // label dropped to save vertical space
   const templates = (debugState.meta && debugState.meta.templates) || {};
-  pre.textContent = _annotateIndices(_walkPath(d.text, path), templates);
+  let text = _annotateIndices(_walkPath(d.text, path), templates);
+  // Enforce a space after every comma, except before a line-continuation "\".
+  text = text.replace(/,(?![\s\\])/g, ", ");
+  pre.innerHTML = _highlight(text);
 }
 
 // ---- debug dump (only when the server runs with --dev) ---------------------

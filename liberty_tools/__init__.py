@@ -424,6 +424,10 @@ class TimingArc:
     def sdf_cond(self) -> str | None:
         return self._native.sdf_cond
 
+    @property
+    def timing_sense(self) -> str | None:
+        return self._native.timing_sense
+
     def when_expr(self) -> BooleanExpression | None:
         """The ``when`` condition as a parsed :class:`BooleanExpression` (None if absent)."""
         return _wrap_expr(self._native.when_expr())

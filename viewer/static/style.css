@@ -115,6 +115,7 @@ table.attrs td, table.attrs th {
   vertical-align: top;
 }
 table.attrs th { color: var(--muted); font-weight: 600; font-size: 11px; }
+table.attrs tr:first-child th { background: #2f2f37; color: var(--fg); }
 table.attrs td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.attrs td.k { color: #e6c07b; white-space: nowrap; }
 table.grid { border-collapse: collapse; margin-top: 6px; }
@@ -163,4 +164,8 @@ table.grid td.num { padding: 3px 6px; text-align: right; color: var(--fg); white
   color: var(--fg);
   white-space: pre;
 }
+#source .tok-str { color: #98c379; }
+#source .tok-com { color: #7f848e; font-style: italic; }
+#source .tok-key { color: #e6c07b; }
+#source .tok-num { color: #d19a66; }
 h3.section { margin: 2px 0; font-size: 12px; color: var(--muted); font-weight: 600; }

@@ -132,6 +132,8 @@ struct TimingArc {
     when: Option<String>,
     #[pyo3(get)]
     sdf_cond: Option<String>,
+    #[pyo3(get)]
+    timing_sense: Option<String>,
     tables: Vec<TimingTableData>,
 }
 
@@ -418,6 +420,7 @@ struct TimingArcData {
     timing_type: Option<String>,
     when: Option<String>,
     sdf_cond: Option<String>,
+    timing_sense: Option<String>,
     tables: Vec<TimingTableData>,
 }
 
@@ -518,6 +521,7 @@ impl From<TimingArcData> for TimingArc {
             timing_type: value.timing_type,
             when: value.when,
             sdf_cond: value.sdf_cond,
+            timing_sense: value.timing_sense,
             tables: value.tables,
         }
     }
@@ -1153,6 +1157,7 @@ impl TimingTable {
                 timing_type: None,
                 when: None,
                 sdf_cond: None,
+                timing_sense: None,
                 tables: Vec::new(),
             },
             &TimingTableData {
@@ -3260,6 +3265,7 @@ impl Parser {
         let mut timing_type = None;
         let mut when = None;
         let mut sdf_cond = None;
+        let mut timing_sense = None;
         let mut tables = Vec::new();
         while !self.consume_symbol(b'}')? {
             let item_name = self.take_word()?;
@@ -3283,6 +3289,7 @@ impl Parser {
                     "timing_type" => timing_type = Some(value),
                     "when" => when = Some(value),
                     "sdf_cond" => sdf_cond = Some(value),
+                    "timing_sense" => timing_sense = Some(value),
                     _ => {}
                 }
             } else {
@@ -3294,6 +3301,7 @@ impl Parser {
             timing_type,
             when,
             sdf_cond,
+            timing_sense,
             tables,
         })
     }

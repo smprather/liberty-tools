@@ -454,21 +454,90 @@ class LibertyData:
         }
 
     def _power_nodes(self, pin: lt.Pin, container: str) -> list[dict[str, Any]]:
-        """Build `internal_power` tree nodes. Groups that share the same
-        (related_pin, when) but differ only by `related_pg_pin` collapse under
-        one node with a pg-pin sub-level (so e.g. the VDD/VSS pair of one
-        condition reads as one entry with two power rails)."""
-        groups: dict[tuple[str, str], list[tuple[int, lt.InternalPower]]] = {}
-        order: list[tuple[str, str]] = []
+        """Build `internal_power` tree nodes, grouped by `related_pin`. Within a
+        related_pin, groups differing only by `related_pg_pin` collapse under a
+        pg-pin sub-level. When a related_pin has more than one `when` (e.g. a
+        conditional group plus its unconditional **default arc**), each `when`
+        becomes a sub-level — the unconditional one shown as `when: [default]`,
+        the fallback used when side-inputs don't match an exact condition."""
+        by_pin: dict[str, list[tuple[int, lt.InternalPower]]] = {}
+        order: list[str] = []
         for i, grp in enumerate(pin.internal_power()):
-            key = (grp.related_pin or "", grp.when or "")
-            if key not in groups:
-                groups[key] = []
-                order.append(key)
-            groups[key].append((i, grp))
-        return [
-            self._power_group_node(pin, container, groups[key]) for key in order
+            rp = grp.related_pin or ""
+            if rp not in by_pin:
+                by_pin[rp] = []
+                order.append(rp)
+            by_pin[rp].append((i, grp))
+        out = []
+        for rp in order:
+            members = by_pin[rp]
+            if len({g.when or "" for _, g in members}) > 1:
+                out.append(self._power_default_node(pin, container, rp, members))
+            else:
+                out.append(self._power_group_node(pin, container, members))
+        return out
+
+    def _power_pg_node(
+        self, pin: lt.Pin, container: str, idx: int, grp: lt.InternalPower
+    ) -> dict[str, Any]:
+        """One `internal_power` group as a `pg=<rail>` node holding its tables."""
+        prefix = [_step("pin", name=pin.name), _step("internal_power", indices=[idx])]
+        pg = grp.related_pg_pin or f"pg{idx}"
+        return {
+            "id": f"{container}|pin:{pin.name}|power:{idx}",
+            "label": f"pg={pg}",
+            "type": "pgpin",
+            "meta": {"related_pg_pin": grp.related_pg_pin},
+            "attributes": _meta_attrs({"related_pg_pin": grp.related_pg_pin}),
+            "src": _path_src(prefix, f"{pin.name} · internal_power"),
+            "children": [
+                self._table_leaf(container, pin.name, "power", idx, t, prefix)
+                for t in grp.tables()
+            ],
+        }
+
+    def _power_default_node(
+        self,
+        pin: lt.Pin,
+        container: str,
+        related_pin: str,
+        members: list[tuple[int, lt.InternalPower]],
+    ) -> dict[str, Any]:
+        """One related_pin with several `when` variants: a `when:` sub-level per
+        condition, the unconditional fallback as `when: [default]`."""
+        by_when: dict[str, list[tuple[int, lt.InternalPower]]] = {}
+        worder: list[str] = []
+        for i, grp in members:
+            w = grp.when or ""
+            if w not in by_when:
+                by_when[w] = []
+                worder.append(w)
+            by_when[w].append((i, grp))
+        gid = f"{container}|pin:{pin.name}|powerpin:{related_pin}"
+        when_children = [
+            {
+                "id": f"{gid}|when:{w}",
+                "label": f"when: {_fmt_bool(w)}" if w else "when: [default]",
+                "type": "when",
+                "attributes": _meta_attrs({"when": w or None, "related_pin": related_pin}),
+                "children": [self._power_pg_node(pin, container, i, g) for i, g in by_when[w]],
+            }
+            for w in worder
         ]
+        arrow = f"{related_pin}→{pin.name}" if related_pin else pin.name
+        meta = {"related_pin": related_pin}
+        return {
+            "id": gid,
+            "label": f"internal_power {arrow}",
+            "type": "powergrp",
+            "meta": meta,
+            "attributes": _meta_attrs(meta),
+            "src": _path_src(
+                [_step("pin", name=pin.name), _step("internal_power", indices=[i for i, _ in members])],
+                f"{pin.name} · internal_power",
+            ),
+            "children": when_children,
+        }
 
     def _power_group_node(
         self,
@@ -516,23 +585,7 @@ class LibertyData:
         # Several groups differing only by pg pin: one parent, a pg-pin level
         # (nested under the `when` level when a condition is present).
         gid = f"{container}|pin:{pin.name}|powergrp:{related_pin or ''}:{when or ''}"
-        pg_nodes = []
-        for idx, grp in members:
-            pg = grp.related_pg_pin or f"pg{idx}"
-            pg_nodes.append(
-                {
-                    "id": f"{gid}|power:{idx}",
-                    "label": f"pg={pg}",
-                    "type": "pgpin",
-                    "meta": {"related_pg_pin": grp.related_pg_pin},
-                    "attributes": _meta_attrs({"related_pg_pin": grp.related_pg_pin}),
-                    "src": _path_src(
-                        [pin_step, _step("internal_power", indices=[idx])],
-                        f"{pin.name} · internal_power",
-                    ),
-                    "children": tables_for(idx, grp),
-                }
-            )
+        pg_nodes = [self._power_pg_node(pin, container, idx, grp) for idx, grp in members]
         arrow = f"{related_pin}→{pin.name}" if related_pin else pin.name
         label = f"internal_power {arrow}"
         meta = {"related_pin": related_pin, "when": when}
@@ -598,7 +651,11 @@ class LibertyData:
                 "type": "arc",
                 "meta": {"related_pin": first.related_pin, "timing_type": first.timing_type},
                 "attributes": _meta_attrs(
-                    {"related_pin": first.related_pin, "timing_type": first.timing_type}
+                    {
+                        "related_pin": first.related_pin,
+                        "timing_type": first.timing_type,
+                        "timing_sense": first.timing_sense,
+                    }
                 ),
                 "src": _path_src([owner_step, _step("timing", indices=[idx])], f"{owner} · timing"),
                 "children": tables_for(idx, arc),
@@ -612,13 +669,14 @@ class LibertyData:
             when_children.append(
                 {
                     "id": f"{arc_id}|when",
-                    "label": f"when: {_fmt_bool(arc.when)}" if arc.when else "when: (unconditional)",
+                    "label": f"when: {_fmt_bool(arc.when)}" if arc.when else "when: [default]",
                     "type": "when",
                     "attributes": _meta_attrs(
                         {
                             "when": arc.when,
                             "related_pin": arc.related_pin,
                             "timing_type": arc.timing_type,
+                            "timing_sense": arc.timing_sense,
                         }
                     ),
                     "src": _path_src(
@@ -633,7 +691,11 @@ class LibertyData:
             "type": "arc",
             "meta": {"related_pin": first.related_pin, "timing_type": first.timing_type},
             "attributes": _meta_attrs(
-                {"related_pin": first.related_pin, "timing_type": first.timing_type}
+                {
+                    "related_pin": first.related_pin,
+                    "timing_type": first.timing_type,
+                    "timing_sense": first.timing_sense,
+                }
             ),
             "src": _path_src(
                 [owner_step, _step("timing", indices=[i for i, _ in members])],
