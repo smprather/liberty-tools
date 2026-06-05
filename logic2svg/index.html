@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>logic2svg — boolean function to gate symbol</title>
+  <style>
+    :root { --bg:#1e1e22; --panel:#26262b; --fg:#d6d6dc; --muted:#8a8a96; --accent:#5aa9e6; --border:#36363d; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    header { padding:14px 18px; border-bottom:1px solid var(--border); }
+    h1 { margin:0 0 2px; font-size:15px; color:var(--accent); }
+    .sub { color:var(--muted); font-size:12px; }
+    main { padding:16px 18px; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    #expr { flex:1; min-width:280px; padding:8px 10px; background:var(--bg); color:var(--fg);
+            border:1px solid var(--border); border-radius:4px; font:inherit; }
+    button { font:inherit; color:#11131a; background:var(--accent); border:none; padding:7px 12px;
+             border-radius:4px; cursor:pointer; }
+    button:hover { filter:brightness(1.08); }
+    .ex { background:#2b2b32; color:var(--fg); border:1px solid var(--border); }
+    .examples { margin:10px 0 2px; }
+    .examples .ex { margin:0 6px 6px 0; padding:4px 9px; font-size:12px; }
+    #err { color:#e06c75; min-height:18px; margin:6px 0; font-size:12px; }
+    #out { margin-top:8px; background:var(--panel); border:1px solid var(--border); border-radius:6px;
+           padding:14px; overflow:auto; }
+    svg { display:block; max-width:100%; }
+    .gate { fill:#2b2b32; stroke:var(--fg); stroke-width:1.6; }
+    .gate2 { fill:none; stroke:var(--fg); stroke-width:1.6; }
+    .wire { fill:none; stroke:#8aa9c6; stroke-width:1.4; }
+    .pin { fill:#8aa9c6; }
+    .bub { fill:var(--bg); stroke:var(--fg); stroke-width:1.4; }
+    .lbl { fill:var(--fg); font-size:12px; }
+    .lbl.out { fill:var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>logic2svg</h1>
+    <div class="sub">Boolean logic function → gate-symbol SVG. Operators: <code>! ~ '</code> NOT,
+      <code>&amp; *</code> or space AND, <code>+ |</code> OR, <code>^</code> XOR, <code>( )</code>, <code>0 1</code>.</div>
+  </header>
+  <main>
+    <div class="row">
+      <input id="expr" type="text" autocomplete="off" spellcheck="false" />
+      <button id="download">Download SVG</button>
+    </div>
+    <div class="examples">
+      <button class="ex">(!s &amp; a &amp; en) + s &amp; b</button>
+      <button class="ex">a ^ b ^ cin</button>
+      <button class="ex">!(a &amp; b) + c &amp; !d</button>
+      <button class="ex">a b c + a' d</button>
+    </div>
+    <div id="err"></div>
+    <div id="out"></div>
+  </main>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
