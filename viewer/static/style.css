@@ -149,7 +149,22 @@ table.grid td.num { padding: 3px 6px; text-align: right; color: var(--fg); white
 .dw-btn.active { background: var(--accent); color: #11131a; }
 .dw-table-scroll { overflow-x: auto; max-width: 100%; margin-top: 4px; }
 #wave-section { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
-#source-section { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+#source-section { position: relative; margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+#source-copy {
+  position: absolute;
+  top: 12px;
+  right: 10px;
+  z-index: 2;
+  display: flex;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 4px;
+  padding: 4px;
+  cursor: pointer;
+}
+#source-copy:hover { color: var(--fg); background: #2f2f37; }
+#source-copy.copied { color: var(--leaf); border-color: var(--leaf); }
 #source-title { margin-bottom: 6px; }
 #source-title:empty { display: none; }
 #source {
@@ -169,3 +184,29 @@ table.grid td.num { padding: 3px 6px; text-align: right; color: var(--fg); white
 #source .tok-key { color: #e6c07b; }
 #source .tok-num { color: #d19a66; }
 h3.section { margin: 2px 0; font-size: 12px; color: var(--muted); font-weight: 600; }
+
+/* Cell view: attribute table (left) + gate symbol (right), same row/height. */
+.cell-top { display: flex; gap: 16px; align-items: flex-start; }
+.cell-left { flex: 0 0 auto; }
+.cell-left table.pg { margin-top: 6px; }
+.cell-sym {
+  margin-left: auto;
+  min-width: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 0;
+}
+.cell-sym .sym { width: fit-content; }
+.cell-sym .sym-title { color: var(--fg); font-size: 12px; margin-bottom: 2px; white-space: nowrap; text-align: center; }
+.cell-sym svg { display: block; font-size: 12px; }
+.cell-sym .gate { fill: #2b2b32; stroke: var(--fg); stroke-width: 1.6; }
+.cell-sym .gate2 { fill: none; stroke: var(--fg); stroke-width: 1.6; }
+.cell-sym .wire { fill: none; stroke: #8aa9c6; stroke-width: 1.4; }
+.cell-sym .pin { fill: #8aa9c6; }
+.cell-sym .bub { fill: var(--bg); stroke: var(--fg); stroke-width: 1.4; }
+.cell-sym .lbl { fill: var(--fg); }
+.cell-sym .lbl.out { fill: var(--accent); }
+.cell-sym .hint { fill: var(--muted); }

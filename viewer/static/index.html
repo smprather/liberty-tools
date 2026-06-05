@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Liberty Viewer</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <script src="/plotly.min.js" charset="utf-8"></script>
   <link rel="stylesheet" href="/style.css" />
 </head>
@@ -31,11 +32,18 @@
       <div id="wave"></div>
     </div>
     <div id="source-section" class="hidden">
+      <button id="source-copy" title="Copy source" aria-label="Copy source">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+      </button>
       <div id="source-title" class="muted"></div>
       <pre id="source"></pre>
     </div>
   </div>
 
+  <script src="/symbol.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

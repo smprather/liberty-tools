@@ -74,7 +74,7 @@ _data: LibertyData | None = None
 
 # The app shell + our own JS/CSS, in addition to all /api/ JSON. `plotly.min.js`
 # is deliberately omitted (large, immutable) so it stays cacheable.
-_NO_STORE_PATHS = {"/", "/index.html", "/app.js", "/style.css"}
+_NO_STORE_PATHS = {"/", "/index.html", "/app.js", "/symbol.js", "/style.css"}
 
 
 @app.middleware("http")

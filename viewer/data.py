@@ -303,6 +303,7 @@ class LibertyData:
             "meta": {"area": cell.area},
             "attributes": _fmt_attr_rows(cell.attributes()),
             "pg_pins": self._pg_pin_table(cell),
+            "seq": self._seq_spec(cell),
             "src": _path_src([], f"{cell_name} · cell"),
             "children": [],
         }
@@ -346,6 +347,54 @@ class LibertyData:
         # in the bottom pane; descendants inherit their nearest named ancestor.
         _propagate_src(node, node["src"])
         return node
+
+    @staticmethod
+    def _lit(expr: str | None) -> dict[str, Any] | None:
+        """A single-literal boolean (`CLK`, `!SETN`, `D'`) -> {name, inv}. Complex
+        expressions are returned as-is with inv=False."""
+        if not expr:
+            return None
+        e = expr.strip()
+        inv = False
+        if e.startswith("!") or e.startswith("~"):
+            inv, e = True, e[1:].strip()
+        elif e.endswith("'"):
+            inv, e = True, e[:-1].strip()
+        while e.startswith("(") and e.endswith(")"):
+            e = e[1:-1].strip()
+        return {"name": e, "inv": inv}
+
+    def _seq_spec(self, cell: lt.Cell) -> dict[str, Any] | None:
+        """Sequential-cell symbol spec from the `ff`/`latch` group: clock/enable,
+        D, Q/QN output pins, async set/clear, and scan (SE/SI) detection."""
+        ff, la = cell.ff(), cell.latch()
+        g = ff or la
+        if g is None:
+            return None
+        pins = list(cell.pins())
+        obj = {p: cell.pin(p) for p in pins}
+        ins = [p for p in pins if (obj[p].direction or "") == "input"]
+        outs = [(p, obj[p].function) for p in pins if (obj[p].direction or "").startswith("output")]
+        v1, v2 = g.variable1, g.variable2
+        qpin = next((p for p, f in outs if f == v1), None)
+        qnpin = next((p for p, f in outs if f == v2), None)
+        # Fallback: assign any unmatched outputs in order to Q then QN.
+        rest = [p for p, _ in outs if p not in (qpin, qnpin)]
+        if qpin is None and rest:
+            qpin = rest.pop(0)
+        if qnpin is None and rest:
+            qnpin = rest.pop(0)
+        spec: dict[str, Any] = {
+            "kind": "ff" if ff else "latch",
+            "d": "D" if "D" in ins else ((la.data_in if la else None) or "D"),
+            "q": qpin,
+            "qn": qnpin,
+            "set": self._lit(g.preset),
+            "clr": self._lit(g.clear),
+            "scan": {"si": "SI", "se": "SE"} if ("SE" in ins and "SI" in ins) else None,
+        }
+        spec["clock" if ff else "enable"] = self._lit(ff.clocked_on if ff else la.enable)
+        return spec
 
     def _pg_pin_table(self, cell: lt.Cell) -> dict[str, Any] | None:
         """The cell's `pg_pin` groups as a table: rows are pg pins, columns the

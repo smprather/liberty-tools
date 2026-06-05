@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- NAND gate. Transparent background (no fill behind the shapes). -->
+  <g fill="none" stroke="#111317" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+    <!-- input stubs -->
+    <line x1="3" y1="22" x2="16" y2="22"/>
+    <line x1="3" y1="32" x2="16" y2="32"/>
+    <line x1="3" y1="42" x2="16" y2="42"/>
+    <!-- output stub -->
+    <line x1="60" y1="32" x2="62" y2="32"/>
+  </g>
+  <!-- AND body -->
+  <path d="M16,13 H33 A19,19 0 0 1 33,51 H16 Z"
+        fill="#9b6bff" stroke="#111317" stroke-width="3.2" stroke-linejoin="round"/>
+  <!-- inversion bubble -->
+  <circle cx="56" cy="32" r="4.4" fill="#54c84a" stroke="#111317" stroke-width="3.2"/>
+</svg>

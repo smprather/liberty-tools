@@ -98,6 +98,11 @@ def _open_when_ready(url: str, timeout: float = 15.0) -> None:
     "[cyan]/tmp/liberty_view_debug.json[/] for inspection.",
 )
 @click.option(
+    "--access-log/--no-access-log",
+    default=False,
+    help="Print the web server's per-request activity log (default: off).",
+)
+@click.option(
     "--exit-on-close/--no-exit-on-close",
     default=True,
     help="Shut the server down shortly after the browser tab closes (default: true).",
@@ -115,6 +120,7 @@ def main(
     open_browser: bool,
     dev: bool,
     exit_on_close: bool,
+    access_log: bool,
 ) -> None:
     """Browse a **Liberty** (`.lib` / `.lib.gz`) library in the browser.
 
@@ -142,7 +148,9 @@ def main(
     if open_browser:
         threading.Thread(target=_open_when_ready, args=(url,), daemon=True).start()
 
-    uvicorn.run("viewer.server:app", host=host, port=port, reload=reload)
+    uvicorn.run(
+        "viewer.server:app", host=host, port=port, reload=reload, access_log=access_log
+    )
 
 
 if __name__ == "__main__":

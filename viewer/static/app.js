@@ -149,6 +149,7 @@ function cellNode(name) {
     const cd = await ensure();
     renderAttrs(cd);
     if (cd.pg_pins) renderPgPins(cd.pg_pins);
+    renderCellSymbol(cd);
     showSource(name, { kind: "path", path: [], label: `${name} · cell` });
     setCrumb([LIB_NAME, name]);
   };
@@ -248,11 +249,76 @@ function renderAttrs(node) {
   view.appendChild(t);
 }
 
+// Cell symbol, placed in the same row as the cell attribute table (right-
+// justified, height-matched). Sequential cells (flip-flop / latch) render a
+// box symbol; combinational cells render each output pin's boolean function as
+// a gate schematic.
+const FIT_H = [90, 280];
+function renderCellSymbol(cellData) {
+  const view = document.getElementById("view");
+  const table = view.querySelector("table.attrs:not(.pg)");
+  if (!table) return;
+
+  let inner = "";
+  if (cellData.seq && typeof seqSymbolSvg === "function") {
+    const kind = cellData.seq.kind === "latch" ? "latch" : cellData.seq.scan ? "scan flop" : "flip-flop";
+    let body;
+    try {
+      body = seqSymbolSvg(cellData.seq, { fitHeight: FIT_H });
+    } catch (e) {
+      body = `<div class="muted">${e.message}</div>`;
+    }
+    inner = `<div class="sym"><div class="sym-title">${kind}</div>${body}</div>`;
+  } else if (typeof functionToSvg === "function") {
+    const outs = (cellData.children || []).filter(
+      (n) => n.type === "pin" && n.meta && /output/.test(n.meta.direction || "") && n.meta.function
+    );
+    if (!outs.length) return;
+    inner = outs
+      .map((n) => {
+        let body;
+        try {
+          body = functionToSvg(n.meta.function, n.label, { minWidthRatio: 0.5, dots: false, demorgan: true, fitHeight: FIT_H });
+        } catch (e) {
+          body = `<div class="muted">${e.message}</div>`;
+        }
+        return `<div class="sym"><div class="sym-title">${n.label} = ${n.meta.function}</div>${body}</div>`;
+      })
+      .join("");
+  } else {
+    return;
+  }
+
+  const box = document.createElement("div");
+  box.className = "cell-sym";
+  box.innerHTML = inner;
+
+  // Flex row: left column (attribute table + pg_pin table stacked) | symbol.
+  const row = document.createElement("div");
+  row.className = "cell-top";
+  table.parentNode.insertBefore(row, table);
+  const left = document.createElement("div");
+  left.className = "cell-left";
+  left.appendChild(table);
+  const pg = view.querySelector("table.attrs.pg");
+  if (pg) left.appendChild(pg);
+  row.appendChild(left);
+  row.appendChild(box);
+
+  // Height: near natural size, clamped to FIT_H px. The label font is baked in
+  // user units (fitHeight) so it lands at ~12px on screen.
+  box.querySelectorAll("svg").forEach((s) => {
+    const vbH = Number((s.getAttribute("viewBox") || "0 0 0 0").split(/\s+/)[3]) || 120;
+    s.setAttribute("height", Math.round(Math.min(FIT_H[1], Math.max(FIT_H[0], vbH))));
+    s.removeAttribute("width");
+  });
+}
+
 // pg_pin groups as a table (appended below the cell attributes).
 function renderPgPins(d) {
   const view = document.getElementById("view");
   const t = document.createElement("table");
-  t.className = "attrs";
+  t.className = "attrs pg";
   t.innerHTML =
     "<tr><th>pg_pin</th>" +
     d.cols.map((c) => `<th>${c}</th>`).join("") +
@@ -938,6 +1004,36 @@ function _collapseToBudget(text, budget) {
   return text;
 }
 
+// Break statements that share a line: put content after a `{` (and after a `;`)
+// on its own line. The original whitespace becomes the indent. String-/comment-
+// aware so `{`/`;` inside quotes or comments are left alone.
+function _breakLines(text) {
+  const n = text.length;
+  let out = "";
+  let i = 0;
+  const contentAfter = (k, stopBrace) => {
+    while (k < n && (text[k] === " " || text[k] === "\t")) k++;
+    return k < n && text[k] !== "\n" && (!stopBrace || text[k] !== "}");
+  };
+  while (i < n) {
+    const c = text[i];
+    const d = text[i + 1];
+    if (c === '"') {
+      out += c; i++;
+      while (i < n && text[i] !== '"') { if (text[i] === "\\") { out += text[i]; i++; } if (i < n) { out += text[i]; i++; } }
+      if (i < n) { out += text[i]; i++; }
+      continue;
+    }
+    if (c === "#" || (c === "/" && d === "/")) { while (i < n && text[i] !== "\n") { out += text[i]; i++; } continue; }
+    if (c === "/" && d === "*") { const j = text.indexOf("*/", i); const e = j < 0 ? n : j + 2; out += text.slice(i, e); i = e; continue; }
+    out += c;
+    i++;
+    if (c === "{" && contentAfter(i, false)) out += "\n";
+    else if (c === ";" && contentAfter(i, true)) out += "\n";
+  }
+  return out;
+}
+
 async function showSource(cell, src) {
   src = src || { kind: "cell", name: cell };
   const sec = document.getElementById("source-section");
@@ -957,8 +1053,9 @@ async function showSource(cell, src) {
   const path = (src && src.path) || [];
   title.textContent = "";  // label dropped to save vertical space
   const templates = (debugState.meta && debugState.meta.templates) || {};
-  // Strip child groups shown elsewhere in the display; drop blank lines.
+  // Strip child groups shown elsewhere; break run-on statements; drop blanks.
   let text = _stripNavGroups(_walkPath(d.text, path), NAV_GROUPS);
+  text = _breakLines(text);
   text = text.split("\n").filter((l) => l.trim() !== "").join("\n");
   text = _annotateIndices(text, templates);
   // Enforce a space after every comma, except before a line-continuation "\".
@@ -1031,6 +1128,52 @@ async function initDevBar() {
     console.error(e);
   }
 }
+
+// ---- keyboard navigation ---------------------------------------------------
+// Up/Down move the selection over visible rows; Right expands (only), Left
+// collapses (only), Enter toggles. Leaves ignore expand/collapse/Enter.
+function _treeKey(e) {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"].includes(e.key)) return;
+  const rows = [...document.querySelectorAll("#tree li.node")].filter((li) => li.offsetParent !== null);
+  if (!rows.length) return;
+  e.preventDefault();
+  const cur = document.querySelector("#tree li.node.selected");
+  const idx = cur ? rows.indexOf(cur) : -1;
+  const kids = (li) => li && li.querySelector(":scope > ul.tree");
+  const expanded = (li) => { const u = kids(li); return u && !u.classList.contains("hidden"); };
+  const tog = (li) => li.querySelector(":scope > .row > .toggle");
+  const select = (li) => {
+    li.querySelector(":scope > .row").click();
+    li.scrollIntoView({ block: "nearest" });
+  };
+
+  if (e.key === "ArrowDown") return select(rows[Math.min(idx + 1, rows.length - 1)] || rows[0]);
+  if (e.key === "ArrowUp") return select(rows[idx <= 0 ? 0 : idx - 1]);
+  if (!cur) return select(rows[0]);
+  if (e.key === "ArrowRight") { if (kids(cur) && !expanded(cur)) tog(cur).click(); return; }
+  if (e.key === "ArrowLeft") { if (kids(cur) && expanded(cur)) tog(cur).click(); return; }
+  if (e.key === "Enter") { if (kids(cur)) tog(cur).click(); }
+}
+document.addEventListener("keydown", _treeKey);
+
+// ---- copy source -----------------------------------------------------------
+(function () {
+  const btn = document.getElementById("source-copy");
+  const copyIcon = btn.innerHTML;
+  const checkIcon =
+    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+  btn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(document.getElementById("source").textContent);
+      btn.classList.add("copied");
+      btn.innerHTML = checkIcon;
+      setTimeout(() => { btn.classList.remove("copied"); btn.innerHTML = copyIcon; }, 1000);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+})();
 
 // ---- boot ------------------------------------------------------------------
 document.getElementById("filter").addEventListener("input", (e) => {
