@@ -183,12 +183,30 @@ def _reshape(values: list[float], n1: int, n2: int, n3: int, ndim: int) -> Any:
     ]
 
 
+_SI_UNIT = {"f": 1e-15, "p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "m": 1e-3, "k": 1e3, "M": 1e6}
+
+
+def _si_scale(unit: str | None) -> float | None:
+    """'1mA' -> 1e-3, '1V' -> 1.0. None/unparseable -> None."""
+    if not unit:
+        return None
+    s = unit.strip()
+    j = 0
+    while j < len(s) and (s[j].isdigit() or s[j] in ".eE+-"):
+        j += 1
+    mag = float(s[:j]) if j else 1.0
+    rest = s[j:]
+    prefix = _SI_UNIT.get(rest[0], 1.0) if len(rest) >= 2 else 1.0
+    return mag * prefix
+
+
 @dataclass
 class LibertyData:
     path: str
     doc: lt.LibraryIndex
     templates: dict[str, list[str | None]] = field(default_factory=dict)
     unit_by_kind: dict[str, str | None] = field(default_factory=dict)
+    _vmap: dict[str, float] | None = None
 
     @classmethod
     def load(cls, path: str) -> "LibertyData":
@@ -876,16 +894,12 @@ class LibertyData:
             stage_idx_raw, table_name = table.split(":", 1)
             stage = pin_obj.timing_arcs()[arc_index].ccsn_stages()[int(stage_idx_raw)]
             if table_name == "dc_current":
-                tbl = stage.dc_current()
-                if tbl is None:
-                    raise ValueError("ccsn stage has no dc_current table")
-            elif table_name == "output_voltage_rise":
+                return self._dc_current_payload(cell_obj, stage)
+            if table_name == "output_voltage_rise":
                 return self._ccs_payload(table_name, stage.output_voltage_rise(), "voltage")
-            elif table_name == "output_voltage_fall":
+            if table_name == "output_voltage_fall":
                 return self._ccs_payload(table_name, stage.output_voltage_fall(), "voltage")
-            else:
-                raise ValueError(f"unknown ccsn table {table_name!r}")
-            table = table_name
+            raise ValueError(f"unknown ccsn table {table_name!r}")
         elif group == "power":
             grps = pin_obj.internal_power()
             tbl = grps[arc_index].table(table)
@@ -909,6 +923,72 @@ class LibertyData:
             "values": _reshape(tbl.values, n1, n2, n3, ndim),
             "scalar": tbl.values[0] if ndim == 0 and tbl.values else None,
             "labels": self._axis_labels(tbl.template, table),
+        }
+
+    def _voltage_map(self) -> dict[str, float]:
+        """Library-level ``voltage_map`` (rail name -> volts), parsed once."""
+        if self._vmap is None:
+            m: dict[str, float] = {}
+            for key, val in self.doc.attributes():
+                if key == "voltage_map":
+                    parts = [p.strip() for p in val.split(",")]
+                    if len(parts) == 2:
+                        try:
+                            m[parts[0]] = float(parts[1])
+                        except ValueError:
+                            pass
+            self._vmap = m
+        return self._vmap
+
+    def _rail_window(self, cell_obj: lt.Cell) -> tuple[float, float] | tuple[None, None]:
+        """``(Vss, Vdd)`` from the cell's primary_ground/primary_power pg_pins via
+        ``voltage_map``; ``(None, None)`` if the rails can't be resolved."""
+        vmap = self._voltage_map()
+        vdd = vss = None
+        for pg in cell_obj.pg_pins():
+            attrs = dict(pg.attributes())
+            name = attrs.get("voltage_name")
+            if name is None:
+                continue
+            if attrs.get("pg_type") == "primary_power":
+                vdd = vmap.get(name)
+            elif attrs.get("pg_type") == "primary_ground":
+                vss = vmap.get(name)
+        if vdd is None or vss is None:
+            return (None, None)
+        return (min(vss, vdd), max(vss, vdd))
+
+    def _dc_current_payload(self, cell_obj: lt.Cell, stage: lt.CcsnStage) -> dict[str, Any]:
+        """CCSN ``dc_current`` as a 2-D table with the input/output voltage axes
+        clipped to the supply rails ``[Vss, Vdd]`` — the channel-connecting
+        block's operating window, where pulling-strength resistance is meaningful.
+        Outside the rails current flows into the power pin / out of ground."""
+        tbl = stage.dc_current()
+        if tbl is None:
+            raise ValueError("ccsn stage has no dc_current table")
+        i1, i2, vals = tbl.index_1, tbl.index_2, tbl.values
+        n2 = len(i2)
+        lo, hi = self._rail_window(cell_obj)
+        keep = (lambda v: True) if lo is None else (lambda v: lo <= v <= hi)
+        ri = [a for a, v in enumerate(i1) if keep(v)]
+        cj = [b for b, v in enumerate(i2) if keep(v)]
+        grid = [[vals[a * n2 + b] for b in cj] for a in ri]
+        return {
+            "table": "dc_current",
+            "kind": "table",
+            "ndim": 2,
+            "index_1": [i1[a] for a in ri],
+            "index_2": [i2[b] for b in cj],
+            "index_3": [],
+            "values": grid,
+            "scalar": None,
+            "labels": self._axis_labels(tbl.template, "dc_current"),
+            # Supply rails (volts) for the viewer's rail-relative resistance and
+            # the delta-v cutoff; null when the cell's rails can't be resolved.
+            "rails": None if lo is None else {"vss": lo, "vdd": hi},
+            # raw resistance (volts / current_unit) -> kilo-ohms
+            "r_scale_kohm": ((_si_scale(self.doc.voltage_unit) or 1.0)
+                             / (_si_scale(self.doc.current_unit) or 1.0)) / 1e3,
         }
 
     def _ccs_payload(

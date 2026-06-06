@@ -639,7 +639,7 @@ function renderHeatmap(view, data, ref) {
     yaxis: { title: L.index_1, range: [0, Math.max(...data.index_1)], ...GRID_WHITE },
   };
   const points = {
-    x: px, y: py, type: "scatter3d", mode: "markers",
+    x: px, y: py, type: "scatter3d", mode: "markers", showlegend: false,
     marker: { size: 1.65, color: "#ff8c00", opacity: 0.95 }, name: "points",
   };
 
@@ -647,39 +647,62 @@ function renderHeatmap(view, data, ref) {
   // resistance = |input_voltage - output_voltage| / dc_current. Two 3D scenes
   // side by side in one div; cells where I==0 become gaps (null).
   if (data.table === "dc_current") {
+    // Rail-relative on-resistance of the conducting pull path: the rail the
+    // current flows FROM is Vdd when I>0 (charging up) else Vss, so
+    // R = (Vrail - Vout) / I is naturally >= 0 and reads as pulling strength.
+    // Drop cells where the input/output swing |Vin-Vout| is < 10% of the rail
+    // span (ill-conditioned near the operating point). Falls back to |dV|/|I|
+    // when the rails are unknown.
+    const rails = data.rails;
+    const kscale = data.r_scale_kohm || 1; // raw (V / current_unit) -> kohm
+    const dvMin = rails ? 0.1 * (rails.vdd - rails.vss) : 0;
     const R = data.index_1.map((vin, i) =>
       data.index_2.map((vout, j) => {
         const I = data.values[i][j];
-        return I ? Math.abs(vin - vout) / I : null;
+        if (!I) return null;
+        if (!rails) return (Math.abs(vin - vout) / Math.abs(I)) * kscale;
+        if (Math.abs(vin - vout) < dvMin) return null;
+        const vrail = I > 0 ? rails.vdd : rails.vss;
+        return ((vrail - vout) / I) * kscale;
       })
     );
     const rz = [];
     data.index_1.forEach((_, i) => data.index_2.forEach((__, j) => rz.push(R[i][j])));
-    const span = (arr) => {
-      const f = arr.filter((v) => Number.isFinite(v));
-      let lo = f.length ? Math.min(...f) : 0;
-      let hi = f.length ? Math.max(...f) : 0;
-      if (lo > 0) lo = 0;
-      if (hi < 0) hi = 0;
+    // Resistance explodes where dc_current -> 0 (heavy-tailed), which flattens
+    // the "transistors-on" range. A robust percentile cap (90th pct + 10%) keeps
+    // the on-range variation visible; outlier spikes clip out of the view cube.
+    // The same bounds drive the colorscale (cmin/cmax) so colour isn't washed out.
+    const pctRange = (arr) => {
+      const f = arr.filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+      if (!f.length) return [0, 1];
+      const q = (p) => {
+        const pos = (f.length - 1) * p;
+        const i = Math.floor(pos);
+        return f[i + 1] !== undefined ? f[i] + (pos - i) * (f[i + 1] - f[i]) : f[i];
+      };
+      let lo = f[0] >= 0 ? 0 : q(0.1);
+      let hi = q(0.9) * 1.1;
+      if (!(hi > lo)) { lo = f[0]; hi = f[f.length - 1]; }
       if (lo === hi) { lo -= 1; hi += 1; }
       return [lo, hi];
     };
-    const [rlo, rhi] = span(rz);
-    const hoverR = `${L.index_1}=%{y}<br>${L.index_2}=%{x}<br>resistance=%{z}<extra></extra>`;
+    const [rlo, rhi] = pctRange(rz);
+    const hoverR = `${L.index_1}=%{y}<br>${L.index_2}=%{x}<br>resistance=%{z:.4g} kΩ<extra></extra>`;
+    const valBare = (L.value || "").replace(/\s*\([^)]*\)\s*$/, ""); // drop unit suffix
     Plotly.newPlot(surf, [
       { z: data.values, x: data.index_2, y: data.index_1, scene: "scene", type: "surface", colorscale: "Viridis", showscale: false, opacity: 0.8, hovertemplate: hover },
       { ...points, z: pz, scene: "scene", hovertemplate: hover },
-      { z: R, x: data.index_2, y: data.index_1, scene: "scene2", type: "surface", colorscale: "Cividis", showscale: false, opacity: 0.8, hovertemplate: hoverR },
+      { z: R, x: data.index_2, y: data.index_1, scene: "scene2", type: "surface", colorscale: "Cividis", showscale: false, opacity: 0.8, cmin: rlo, cmax: rhi, hovertemplate: hoverR },
       { ...points, z: rz, scene: "scene2", hovertemplate: hoverR },
     ], {
       ...PLOT_LAYOUT,
       height: 340,
       margin: { l: 0, r: 0, t: 18, b: 0 },
-      scene: { ...sceneBase, domain: { x: [0, 0.48], y: [0, 1] }, ...axisXY, zaxis: { title: L.value, range: [zlo, zhi], ...GRID_WHITE } },
-      scene2: { ...sceneBase, domain: { x: [0.52, 1], y: [0, 1] }, ...axisXY, zaxis: { title: "resistance (|ΔV|/I)", range: [rlo, rhi], ...GRID_WHITE } },
+      scene: { ...sceneBase, domain: { x: [0, 0.48], y: [0, 1] }, ...axisXY, zaxis: { title: valBare, range: [zlo, zhi], ...GRID_WHITE } },
+      scene2: { ...sceneBase, domain: { x: [0.52, 1], y: [0, 1] }, ...axisXY, zaxis: { title: "resistance", range: [rlo, rhi], ...GRID_WHITE } },
       annotations: [
         { text: L.value, x: 0.24, y: 1, xref: "paper", yref: "paper", showarrow: false, font: { color: "#cbd5e1" } },
-        { text: "resistance", x: 0.76, y: 1, xref: "paper", yref: "paper", showarrow: false, font: { color: "#cbd5e1" } },
+        { text: "resistance (kΩ)", x: 0.76, y: 1, xref: "paper", yref: "paper", showarrow: false, font: { color: "#cbd5e1" } },
       ],
     }, { responsive: true });
     return;
