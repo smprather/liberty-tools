@@ -43,6 +43,7 @@ _VALUE_KIND = {
     "retain_rise_slew": "time",
     "retain_fall_slew": "time",
     "cell_degradation": "time",
+    "dc_current": "current",
     "output_current_rise": "current",
     "output_current_fall": "current",
     "rise_power": "energy",
@@ -711,7 +712,49 @@ class LibertyData:
 
         def tables_for(idx: int, arc: lt.TimingArc) -> list[dict[str, Any]]:
             prefix = [owner_step, _step("timing", indices=[idx])]
-            return [self._table_leaf(base, owner, "timing", idx, t, prefix) for t in arc.tables()]
+            out = [self._table_leaf(base, owner, "timing", idx, t, prefix) for t in arc.tables()]
+            stage_counts: dict[str, int] = {}
+            for stage_idx, stage in enumerate(arc.ccsn_stages()):
+                stage_occurrence = stage_counts.get(stage.name, 0)
+                stage_counts[stage.name] = stage_occurrence + 1
+                stage_prefix = prefix + [_step(stage.name, indices=[stage_occurrence])]
+                children: list[dict[str, Any]] = []
+                if stage.dc_current() is not None:
+                    leaf = self._table_leaf(base, owner, "ccsn", idx, f"{stage_idx}:dc_current")
+                    leaf["label"] = "dc_current"
+                    leaf["src"] = _path_src(
+                        stage_prefix + [_step("dc_current", indices=[0])], "dc_current · table"
+                    )
+                    children.append(leaf)
+                for table in ("output_voltage_rise", "output_voltage_fall"):
+                    vectors = getattr(stage, table)()
+                    if vectors:
+                        leaf = self._table_leaf(base, owner, "ccsn", idx, f"{stage_idx}:{table}")
+                        leaf["label"] = table
+                        leaf["src"] = _path_src(
+                            stage_prefix + [_step(table, indices=[0])], f"{table} · table"
+                        )
+                        children.append(leaf)
+                meta = {
+                    "is_inverting": stage.is_inverting,
+                    "is_needed": stage.is_needed,
+                    "is_pass_gate": stage.is_pass_gate,
+                    "stage_type": stage.stage_type,
+                    "miller_cap_rise": stage.miller_cap_rise,
+                    "miller_cap_fall": stage.miller_cap_fall,
+                    "when": stage.when,
+                }
+                out.append(
+                    {
+                        "id": f"{base}|pin:{owner}|ccsn:{idx}:{stage_idx}",
+                        "label": stage.name,
+                        "type": "ccsn",
+                        "attributes": _meta_attrs(meta),
+                        "src": _path_src(stage_prefix, f"{stage.name} · CCSN"),
+                        "children": children,
+                    }
+                )
+            return out
 
         # Lone unconditional arc: tables hang straight off the arc node.
         if len(members) == 1 and not first.when:
@@ -829,6 +872,20 @@ class LibertyData:
         if group == "timing":
             arcs = pin_obj.timing_arcs()
             tbl = arcs[arc_index].table(table)
+        elif group == "ccsn":
+            stage_idx_raw, table_name = table.split(":", 1)
+            stage = pin_obj.timing_arcs()[arc_index].ccsn_stages()[int(stage_idx_raw)]
+            if table_name == "dc_current":
+                tbl = stage.dc_current()
+                if tbl is None:
+                    raise ValueError("ccsn stage has no dc_current table")
+            elif table_name == "output_voltage_rise":
+                return self._ccs_payload(table_name, stage.output_voltage_rise(), "voltage")
+            elif table_name == "output_voltage_fall":
+                return self._ccs_payload(table_name, stage.output_voltage_fall(), "voltage")
+            else:
+                raise ValueError(f"unknown ccsn table {table_name!r}")
+            table = table_name
         elif group == "power":
             grps = pin_obj.internal_power()
             tbl = grps[arc_index].table(table)
@@ -854,11 +911,13 @@ class LibertyData:
             "labels": self._axis_labels(tbl.template, table),
         }
 
-    def _ccs_payload(self, table: str, vectors: list) -> dict[str, Any]:
-        """CCS group -> slew x cap grid of current-vs-time waves.
+    def _ccs_payload(
+        self, table: str, vectors: list, value_label: str = "current"
+    ) -> dict[str, Any]:
+        """CCS group -> slew x cap grid of value-vs-time waves.
 
         Each `vector` is one point in (input slew, output cap) space holding a
-        full current(time) wave. The grid cell summary is the 95%-decay time.
+        full value(time) wave. The grid cell summary is the 95%-decay time.
         """
         slews = sorted({v.index_1[0] for v in vectors if v.index_1})
         caps = sorted({v.index_2[0] for v in vectors if v.index_2})
@@ -881,7 +940,7 @@ class LibertyData:
             "index_1": self._with_unit(_ALIAS.get(vars_[0], vars_[0]), _VAR_KIND.get(vars_[0] or "")) if vars_[0] else "slew",
             "index_2": self._with_unit(_ALIAS.get(vars_[1], vars_[1]), _VAR_KIND.get(vars_[1] or "")) if len(vars_) > 1 and vars_[1] else "load",
             "time": self._with_unit(vars_[2] if len(vars_) > 2 and vars_[2] else "time", "time"),
-            "current": self._with_unit("current", "current"),
+            "current": self._with_unit(value_label, value_label),
         }
         return {
             "table": table,

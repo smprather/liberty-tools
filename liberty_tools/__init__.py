@@ -446,6 +446,60 @@ class TimingArc:
     def table(self, name: str) -> TimingTable:
         return TimingTable(self._native.table(name))
 
+    def ccsn_stages(self) -> list[CcsnStage]:
+        return [CcsnStage(stage) for stage in self._native.ccsn_stages()]
+
+
+class CcsnStage:
+    def __init__(self, native: _native.CcsnStage):
+        self._native = native
+
+    @property
+    def name(self) -> str:
+        return self._native.name
+
+    @property
+    def is_inverting(self) -> str | None:
+        return self._native.is_inverting
+
+    @property
+    def is_needed(self) -> str | None:
+        return self._native.is_needed
+
+    @property
+    def is_pass_gate(self) -> str | None:
+        return self._native.is_pass_gate
+
+    @property
+    def stage_type(self) -> str | None:
+        return self._native.stage_type
+
+    @property
+    def miller_cap_rise(self) -> float | None:
+        return self._native.miller_cap_rise
+
+    @property
+    def miller_cap_fall(self) -> float | None:
+        return self._native.miller_cap_fall
+
+    @property
+    def when(self) -> str | None:
+        return self._native.when
+
+    @property
+    def mode(self) -> str | None:
+        return self._native.mode
+
+    def dc_current(self) -> TimingTable | None:
+        native = self._native.dc_current()
+        return TimingTable(native) if native is not None else None
+
+    def output_voltage_rise(self) -> list[TimingTable]:
+        return [TimingTable(table) for table in self._native.output_voltage_rise()]
+
+    def output_voltage_fall(self) -> list[TimingTable]:
+        return [TimingTable(table) for table in self._native.output_voltage_fall()]
+
 
 class InternalPower:
     """An ``internal_power`` group (switching energy, not power)."""
@@ -804,6 +858,7 @@ __all__ = [
     "Bus",
     "Bundle",
     "BusType",
+    "CcsnStage",
     "DynamicCurrent",
     "Ff",
     "InternalPower",

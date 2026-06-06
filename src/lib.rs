@@ -136,6 +136,33 @@ struct TimingArc {
     #[pyo3(get)]
     timing_sense: Option<String>,
     tables: Vec<TimingTableData>,
+    ccsn_stages: Vec<CcsnStageData>,
+}
+
+#[pyclass(from_py_object)]
+#[derive(Clone)]
+struct CcsnStage {
+    #[pyo3(get)]
+    name: String,
+    #[pyo3(get)]
+    is_inverting: Option<String>,
+    #[pyo3(get)]
+    is_needed: Option<String>,
+    #[pyo3(get)]
+    is_pass_gate: Option<String>,
+    #[pyo3(get)]
+    stage_type: Option<String>,
+    #[pyo3(get)]
+    miller_cap_rise: Option<f64>,
+    #[pyo3(get)]
+    miller_cap_fall: Option<f64>,
+    #[pyo3(get)]
+    when: Option<String>,
+    #[pyo3(get)]
+    mode: Option<String>,
+    dc_current: Option<TimingTableData>,
+    output_voltage_rise: Vec<TimingTableData>,
+    output_voltage_fall: Vec<TimingTableData>,
 }
 
 #[pyclass(from_py_object)]
@@ -457,6 +484,23 @@ struct TimingArcData {
     sdf_cond: Option<String>,
     timing_sense: Option<String>,
     tables: Vec<TimingTableData>,
+    ccsn_stages: Vec<CcsnStageData>,
+}
+
+#[derive(Clone)]
+struct CcsnStageData {
+    name: String,
+    is_inverting: Option<String>,
+    is_needed: Option<String>,
+    is_pass_gate: Option<String>,
+    stage_type: Option<String>,
+    miller_cap_rise: Option<f64>,
+    miller_cap_fall: Option<f64>,
+    when: Option<String>,
+    mode: Option<String>,
+    dc_current: Option<TimingTableData>,
+    output_voltage_rise: Vec<TimingTableData>,
+    output_voltage_fall: Vec<TimingTableData>,
 }
 
 #[derive(Clone)]
@@ -559,6 +603,26 @@ impl From<TimingArcData> for TimingArc {
             sdf_cond: value.sdf_cond,
             timing_sense: value.timing_sense,
             tables: value.tables,
+            ccsn_stages: value.ccsn_stages,
+        }
+    }
+}
+
+impl From<CcsnStageData> for CcsnStage {
+    fn from(value: CcsnStageData) -> Self {
+        Self {
+            name: value.name,
+            is_inverting: value.is_inverting,
+            is_needed: value.is_needed,
+            is_pass_gate: value.is_pass_gate,
+            stage_type: value.stage_type,
+            miller_cap_rise: value.miller_cap_rise,
+            miller_cap_fall: value.miller_cap_fall,
+            when: value.when,
+            mode: value.mode,
+            dc_current: value.dc_current,
+            output_voltage_rise: value.output_voltage_rise,
+            output_voltage_fall: value.output_voltage_fall,
         }
     }
 }
@@ -1164,6 +1228,14 @@ impl TimingArc {
             .ok_or_else(|| PyKeyError::new_err(format!("unknown timing table {name:?}")))
     }
 
+    fn ccsn_stages(&self) -> Vec<CcsnStage> {
+        self.ccsn_stages
+            .iter()
+            .cloned()
+            .map(CcsnStage::from)
+            .collect()
+    }
+
     /// The `when` condition as a parsed `BooleanExpression` (None if absent).
     fn when_expr(&self) -> PyResult<Option<BooleanExpression>> {
         expr_of(&self.when)
@@ -1172,6 +1244,29 @@ impl TimingArc {
     /// The `sdf_cond` condition as a parsed `BooleanExpression` (None if absent).
     fn sdf_cond_expr(&self) -> PyResult<Option<BooleanExpression>> {
         expr_of(&self.sdf_cond)
+    }
+}
+
+#[pymethods]
+impl CcsnStage {
+    fn dc_current(&self) -> Option<TimingTable> {
+        self.dc_current.clone().map(TimingTable::from)
+    }
+
+    fn output_voltage_rise(&self) -> Vec<TimingTable> {
+        self.output_voltage_rise
+            .iter()
+            .cloned()
+            .map(TimingTable::from)
+            .collect()
+    }
+
+    fn output_voltage_fall(&self) -> Vec<TimingTable> {
+        self.output_voltage_fall
+            .iter()
+            .cloned()
+            .map(TimingTable::from)
+            .collect()
     }
 }
 
@@ -1200,6 +1295,7 @@ impl TimingTable {
                 sdf_cond: None,
                 timing_sense: None,
                 tables: Vec::new(),
+                ccsn_stages: Vec::new(),
             },
             &TimingTableData {
                 name: self.name.clone(),
@@ -1218,11 +1314,20 @@ impl TimingTable {
 
 #[pyfunction]
 #[pyo3(signature = (path, cells=None))]
-fn parse_file(path: &str, cells: Option<Vec<String>>) -> PyResult<Document> {
+fn parse_file(py: Python<'_>, path: &str, cells: Option<Vec<String>>) -> PyResult<Document> {
+    let path = path.to_string();
     let filter = cells.map(|items| items.into_iter().collect::<HashSet<_>>());
-    let reader = open_input(path).map_err(|err| PyValueError::new_err(err.to_string()))?;
-    let mut parser = Parser::new(reader, filter).map_err(ParseError::into_py)?;
-    parser.parse_document().map_err(ParseError::into_py)
+    py.detach(move || parse_file_document(&path, filter))
+        .map_err(ParseLoadError::into_py)
+}
+
+fn parse_file_document(
+    path: &str,
+    filter: Option<HashSet<String>>,
+) -> Result<Document, ParseLoadError> {
+    let reader = open_input(path).map_err(ParseLoadError::Io)?;
+    let mut parser = Parser::new(reader, filter).map_err(ParseLoadError::Parse)?;
+    parser.parse_document().map_err(ParseLoadError::Parse)
 }
 
 /// Encode the lexer's token stream as strings (`W<value>` for words, `S<char>`
@@ -1262,6 +1367,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Bundle>()?;
     m.add_class::<BusType>()?;
     m.add_class::<TimingArc>()?;
+    m.add_class::<CcsnStage>()?;
     m.add_class::<TimingTable>()?;
     m.add_class::<InternalPower>()?;
     m.add_class::<DynamicCurrent>()?;
@@ -2282,26 +2388,10 @@ struct LibraryIndex {
 #[pymethods]
 impl LibraryIndex {
     #[staticmethod]
-    fn open(path: &str) -> PyResult<LibraryIndex> {
-        let data = read_to_memory(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let (lib_name, preamble_start, preamble_end, cells) = index_cells(&data);
-        let header = parse_slice_as_library(&lib_name, &data[preamble_start..preamble_end])
-            .map_err(ParseError::into_py)?;
-        let mut order = Vec::with_capacity(cells.len());
-        let mut ranges = HashMap::with_capacity(cells.len());
-        for (name, start, end) in cells {
-            if !ranges.contains_key(&name) {
-                order.push(name.clone());
-            }
-            ranges.insert(name, (start, end));
-        }
-        Ok(LibraryIndex {
-            data,
-            library_name: lib_name,
-            order,
-            ranges,
-            header,
-        })
+    fn open(py: Python<'_>, path: &str) -> PyResult<LibraryIndex> {
+        let path = path.to_string();
+        py.detach(move || open_library_index(&path))
+            .map_err(ParseLoadError::into_py)
     }
 
     fn cell_names(&self) -> Vec<String> {
@@ -2312,28 +2402,18 @@ impl LibraryIndex {
         self.order.len()
     }
 
-    fn cell(&self, name: &str) -> PyResult<Cell> {
-        let &(start, end) = self
-            .ranges
-            .get(name)
-            .ok_or_else(|| PyKeyError::new_err(format!("unknown cell {name:?}")))?;
-        let doc = parse_slice_as_library(&self.library_name, &self.data[start..end])
-            .map_err(ParseError::into_py)?;
-        doc.cells
-            .into_iter()
-            .next()
-            .map(Cell::from)
-            .ok_or_else(|| PyValueError::new_err(format!("failed to parse cell {name:?}")))
+    fn cell(&self, py: Python<'_>, name: &str) -> PyResult<Cell> {
+        let name = name.to_string();
+        py.detach(move || self.parse_cell_by_name(&name))
+            .map_err(CellLookupError::into_py)
     }
 
     /// Raw Liberty source text of one cell, sliced from the in-memory buffer.
     /// O(cell size) — independent of the total file size.
-    fn cell_source(&self, name: &str) -> PyResult<String> {
-        let &(start, end) = self
-            .ranges
-            .get(name)
-            .ok_or_else(|| PyKeyError::new_err(format!("unknown cell {name:?}")))?;
-        Ok(String::from_utf8_lossy(&self.data[start..end]).into_owned())
+    fn cell_source(&self, py: Python<'_>, name: &str) -> PyResult<String> {
+        let name = name.to_string();
+        py.detach(move || self.cell_source_by_name(&name))
+            .map_err(CellSourceError::into_py)
     }
 
     // -- library header pass-throughs (parsed once at open) --
@@ -2365,6 +2445,52 @@ impl LibraryIndex {
     fn driver_waveforms(&self) -> Vec<TimingTable> {
         self.header.driver_waveforms()
     }
+}
+
+impl LibraryIndex {
+    fn parse_cell_by_name(&self, name: &str) -> Result<Cell, CellLookupError> {
+        let &(start, end) = self
+            .ranges
+            .get(name)
+            .ok_or_else(|| CellLookupError::Unknown(name.to_string()))?;
+        let doc = parse_slice_as_library(&self.library_name, &self.data[start..end])
+            .map_err(CellLookupError::Parse)?;
+        doc.cells
+            .into_iter()
+            .next()
+            .map(Cell::from)
+            .ok_or_else(|| CellLookupError::Empty(name.to_string()))
+    }
+
+    fn cell_source_by_name(&self, name: &str) -> Result<String, CellSourceError> {
+        let &(start, end) = self
+            .ranges
+            .get(name)
+            .ok_or_else(|| CellSourceError::Unknown(name.to_string()))?;
+        Ok(String::from_utf8_lossy(&self.data[start..end]).into_owned())
+    }
+}
+
+fn open_library_index(path: &str) -> Result<LibraryIndex, ParseLoadError> {
+    let data = read_to_memory(path).map_err(ParseLoadError::Io)?;
+    let (lib_name, preamble_start, preamble_end, cells) = index_cells(&data);
+    let header = parse_slice_as_library(&lib_name, &data[preamble_start..preamble_end])
+        .map_err(ParseLoadError::Parse)?;
+    let mut order = Vec::with_capacity(cells.len());
+    let mut ranges = HashMap::with_capacity(cells.len());
+    for (name, start, end) in cells {
+        if !ranges.contains_key(&name) {
+            order.push(name.clone());
+        }
+        ranges.insert(name, (start, end));
+    }
+    Ok(LibraryIndex {
+        data,
+        library_name: lib_name,
+        order,
+        ranges,
+        header,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -3338,12 +3464,15 @@ impl Parser {
         let mut sdf_cond = None;
         let mut timing_sense = None;
         let mut tables = Vec::new();
+        let mut ccsn_stages = Vec::new();
         while !self.consume_symbol(b'}')? {
             let item_name = self.take_word()?;
             if self.consume_symbol(b'(')? {
                 let args = self.read_args(&item_name)?;
                 if self.consume_symbol(b'{')? {
-                    if is_timing_table_group(&item_name) {
+                    if is_ccsn_stage_group(&item_name) {
+                        ccsn_stages.push(self.parse_ccsn_stage_body(item_name)?);
+                    } else if is_timing_table_group(&item_name) {
                         let template = args.first().cloned();
                         tables.push(self.parse_timing_table_body(item_name, template)?);
                     } else {
@@ -3374,6 +3503,82 @@ impl Parser {
             sdf_cond,
             timing_sense,
             tables,
+            ccsn_stages,
+        })
+    }
+
+    fn parse_ccsn_stage_body(&mut self, name: String) -> Result<CcsnStageData, ParseError> {
+        let mut is_inverting = None;
+        let mut is_needed = None;
+        let mut is_pass_gate = None;
+        let mut stage_type = None;
+        let mut miller_cap_rise = None;
+        let mut miller_cap_fall = None;
+        let mut when = None;
+        let mut mode = None;
+        let mut dc_current = None;
+        let mut output_voltage_rise = Vec::new();
+        let mut output_voltage_fall = Vec::new();
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b'(')? {
+                let args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    match item_name.as_str() {
+                        "dc_current" => {
+                            let template = args.first().cloned();
+                            dc_current = Some(self.parse_timing_table_body(item_name, template)?);
+                        }
+                        "output_voltage_rise" => {
+                            let table = self.parse_timing_table_body(item_name, None)?;
+                            output_voltage_rise = table.vectors;
+                        }
+                        "output_voltage_fall" => {
+                            let table = self.parse_timing_table_body(item_name, None)?;
+                            output_voltage_fall = table.vectors;
+                        }
+                        "propagated_noise_high" | "propagated_noise_low" => {
+                            // TODO: deferred 4D propagated-noise parsing.
+                            self.skip_group_body()?;
+                        }
+                        _ => self.skip_group_body()?,
+                    }
+                    self.consume_symbol(b';')?;
+                } else {
+                    self.consume_symbol(b';')?;
+                    if item_name == "mode" {
+                        mode = Some(args.join(", "));
+                    }
+                }
+            } else if self.consume_symbol(b':')? {
+                let value = self.read_simple_attribute_value()?;
+                match item_name.as_str() {
+                    "is_inverting" => is_inverting = Some(value),
+                    "is_needed" => is_needed = Some(value),
+                    "is_pass_gate" => is_pass_gate = Some(value),
+                    "stage_type" => stage_type = Some(value),
+                    "miller_cap_rise" => miller_cap_rise = parse_number(&value),
+                    "miller_cap_fall" => miller_cap_fall = parse_number(&value),
+                    "when" => when = Some(value),
+                    _ => {}
+                }
+            } else {
+                return Err(self.error_here("expected '(' or ':' after ccsn stage item name"));
+            }
+        }
+        Ok(CcsnStageData {
+            name,
+            is_inverting,
+            is_needed,
+            is_pass_gate,
+            stage_type,
+            miller_cap_rise,
+            miller_cap_fall,
+            when,
+            mode,
+            dc_current,
+            output_voltage_rise,
+            output_voltage_fall,
         })
     }
 
@@ -3599,16 +3804,22 @@ fn is_timing_table_group(name: &str) -> bool {
             | "ccst_fall"
             | "ccsp_rise"
             | "ccsp_fall"
-            | "ccsn_first_stage"
+            | "receiver_capacitance1_rise"
+            | "receiver_capacitance1_fall"
+            | "receiver_capacitance2_rise"
+            | "receiver_capacitance2_fall"
+    )
+}
+
+fn is_ccsn_stage_group(name: &str) -> bool {
+    matches!(
+        name,
+        "ccsn_first_stage"
             | "ccsn_last_stage"
             | "ccsn_rise_first_stage"
             | "ccsn_rise_last_stage"
             | "ccsn_fall_first_stage"
             | "ccsn_fall_last_stage"
-            | "receiver_capacitance1_rise"
-            | "receiver_capacitance1_fall"
-            | "receiver_capacitance2_rise"
-            | "receiver_capacitance2_fall"
     )
 }
 
@@ -3695,6 +3906,48 @@ impl ParseError {
             "Liberty parse error at line {}, column {}: {}",
             self.line, self.column, self.message
         ))
+    }
+}
+
+enum ParseLoadError {
+    Io(io::Error),
+    Parse(ParseError),
+}
+
+impl ParseLoadError {
+    fn into_py(self) -> PyErr {
+        match self {
+            Self::Io(err) => PyValueError::new_err(err.to_string()),
+            Self::Parse(err) => err.into_py(),
+        }
+    }
+}
+
+enum CellLookupError {
+    Unknown(String),
+    Parse(ParseError),
+    Empty(String),
+}
+
+impl CellLookupError {
+    fn into_py(self) -> PyErr {
+        match self {
+            Self::Unknown(name) => PyKeyError::new_err(format!("unknown cell {name:?}")),
+            Self::Parse(err) => err.into_py(),
+            Self::Empty(name) => PyValueError::new_err(format!("failed to parse cell {name:?}")),
+        }
+    }
+}
+
+enum CellSourceError {
+    Unknown(String),
+}
+
+impl CellSourceError {
+    fn into_py(self) -> PyErr {
+        match self {
+            Self::Unknown(name) => PyKeyError::new_err(format!("unknown cell {name:?}")),
+        }
     }
 }
 

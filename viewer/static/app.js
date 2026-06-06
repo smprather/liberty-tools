@@ -31,7 +31,7 @@ const NAV_GROUPS = new Set([
 
 // Groups that hold raw float data the viewer does NOT yet display (so they
 // belong in the source, but they're huge) — collapsed FIRST when over budget.
-const UNDISPLAYED_DATA = new Set(["ccsn_first_stage", "ccsn_last_stage"]);
+const UNDISPLAYED_DATA = new Set([]);
 const SOURCE_MAX_LINES = 1000;
 
 async function api(path) {
@@ -486,6 +486,7 @@ function renderCcsGrid(view, data) {
   head.innerHTML = `<th>${L.index_1} \\ ${L.index_2}</th>` + data.index_2.map((c) => `<th>${c}</th>`).join("");
   tbl.appendChild(head);
 
+  const populated = [];
   data.index_1.forEach((slew, i) => {
     const tr = document.createElement("tr");
     tr.innerHTML = `<th>${slew}</th>`;
@@ -501,6 +502,7 @@ function renderCcsGrid(view, data) {
           btn.classList.add("active");
           showCcsWave(data.table, slew, cap, cellData, data.labels);
         };
+        populated.push({ button: btn, i, j });
         td.appendChild(btn);
       }
       tr.appendChild(td);
@@ -508,6 +510,16 @@ function renderCcsGrid(view, data) {
     tbl.appendChild(tr);
   });
   view.appendChild(tbl);
+  if (populated.length) {
+    const ci = Math.floor((data.index_1.length - 1) / 2);
+    const cj = Math.floor((data.index_2.length - 1) / 2);
+    const nearest = populated.reduce((best, cell) => {
+      const bestDist = (best.i - ci) ** 2 + (best.j - cj) ** 2;
+      const cellDist = (cell.i - ci) ** 2 + (cell.j - cj) ** 2;
+      return cellDist < bestDist ? cell : best;
+    });
+    nearest.button.click();
+  }
 }
 
 // CCS/CCSP waves carry a long settling tail (current ~0 out to ~1 ns); without
@@ -595,7 +607,14 @@ function renderHeatmap(view, data, ref) {
 
   const surf = document.createElement("div");
   view.appendChild(surf);
-  const zmax = Math.max(...data.values.flat());
+  // z range spans the actual data (values can be negative, e.g. hold
+  // constraints); anchor at 0 only when the data is one-sided.
+  const flat = data.values.flat();
+  let zlo = Math.min(...flat);
+  let zhi = Math.max(...flat);
+  if (zlo > 0) zlo = 0;
+  if (zhi < 0) zhi = 0;
+  if (zlo === zhi) { zlo -= 1; zhi += 1; }
   // Markers at the actual table grid points overlaid on the interpolated surface.
   const px = [];
   const py = [];
@@ -607,30 +626,79 @@ function renderHeatmap(view, data, ref) {
       pz.push(data.values[i][j]);
     })
   );
+  // Equal x/y screen extent, z capped at 50% of it (steep z ranges don't render
+  // as a cliff); viewed from the -x/-y side so the (0,0,0) corner faces front.
+  const sceneBase = {
+    aspectmode: "manual",
+    aspectratio: { x: 1, y: 1, z: 0.5 },
+    camera: { eye: { x: -1.2, y: -1.2, z: 0.85 } },
+  };
+  // All three axes start at 0 so x/y share the same origin corner; white grid.
+  const axisXY = {
+    xaxis: { title: L.index_2, range: [0, Math.max(...data.index_2)], ...GRID_WHITE },
+    yaxis: { title: L.index_1, range: [0, Math.max(...data.index_1)], ...GRID_WHITE },
+  };
+  const points = {
+    x: px, y: py, type: "scatter3d", mode: "markers",
+    marker: { size: 1.65, color: "#ff8c00", opacity: 0.95 }, name: "points",
+  };
+
+  // CCSN dc_current: show the current surface beside a resistance surface,
+  // resistance = |input_voltage - output_voltage| / dc_current. Two 3D scenes
+  // side by side in one div; cells where I==0 become gaps (null).
+  if (data.table === "dc_current") {
+    const R = data.index_1.map((vin, i) =>
+      data.index_2.map((vout, j) => {
+        const I = data.values[i][j];
+        return I ? Math.abs(vin - vout) / I : null;
+      })
+    );
+    const rz = [];
+    data.index_1.forEach((_, i) => data.index_2.forEach((__, j) => rz.push(R[i][j])));
+    const span = (arr) => {
+      const f = arr.filter((v) => Number.isFinite(v));
+      let lo = f.length ? Math.min(...f) : 0;
+      let hi = f.length ? Math.max(...f) : 0;
+      if (lo > 0) lo = 0;
+      if (hi < 0) hi = 0;
+      if (lo === hi) { lo -= 1; hi += 1; }
+      return [lo, hi];
+    };
+    const [rlo, rhi] = span(rz);
+    const hoverR = `${L.index_1}=%{y}<br>${L.index_2}=%{x}<br>resistance=%{z}<extra></extra>`;
+    Plotly.newPlot(surf, [
+      { z: data.values, x: data.index_2, y: data.index_1, scene: "scene", type: "surface", colorscale: "Viridis", showscale: false, opacity: 0.8, hovertemplate: hover },
+      { ...points, z: pz, scene: "scene", hovertemplate: hover },
+      { z: R, x: data.index_2, y: data.index_1, scene: "scene2", type: "surface", colorscale: "Cividis", showscale: false, opacity: 0.8, hovertemplate: hoverR },
+      { ...points, z: rz, scene: "scene2", hovertemplate: hoverR },
+    ], {
+      ...PLOT_LAYOUT,
+      height: 340,
+      margin: { l: 0, r: 0, t: 18, b: 0 },
+      scene: { ...sceneBase, domain: { x: [0, 0.48], y: [0, 1] }, ...axisXY, zaxis: { title: L.value, range: [zlo, zhi], ...GRID_WHITE } },
+      scene2: { ...sceneBase, domain: { x: [0.52, 1], y: [0, 1] }, ...axisXY, zaxis: { title: "resistance (|ΔV|/I)", range: [rlo, rhi], ...GRID_WHITE } },
+      annotations: [
+        { text: L.value, x: 0.24, y: 1, xref: "paper", yref: "paper", showarrow: false, font: { color: "#cbd5e1" } },
+        { text: "resistance", x: 0.76, y: 1, xref: "paper", yref: "paper", showarrow: false, font: { color: "#cbd5e1" } },
+      ],
+    }, { responsive: true });
+    return;
+  }
+
   Plotly.newPlot(surf, [{
     z: data.values, x: data.index_2, y: data.index_1,
     type: "surface", colorscale: "Viridis", showscale: false, opacity: 0.8, hovertemplate: hover,
   }, {
-    x: px, y: py, z: pz, type: "scatter3d", mode: "markers",
-    marker: { size: 1.65, color: "#ff8c00", opacity: 0.95 }, hovertemplate: hover, name: "points",
+    ...points, z: pz, hovertemplate: hover,
   }], {
     ...PLOT_LAYOUT,
     height: 340,
     margin: { l: 0, r: 0, t: 0, b: 0 },
     scene: {
-      // Equal x/y screen extent, z capped at 50% of it, so steep z ranges
-      // don't render as a cliff regardless of the data's value range.
-      aspectmode: "manual",
-      aspectratio: { x: 1, y: 1, z: 0.5 },
-      // Domain fills the div (less surrounding dead space); view from the -x/-y
-      // side and zoomed in so the (0,0,0) corner faces front and the surface
-      // fills the frame.
+      ...sceneBase,
       domain: { x: [0, 1], y: [0, 1] },
-      camera: { eye: { x: -1.2, y: -1.2, z: 0.85 } },
-      // All three axes start at 0 so x/y share the same origin corner; white grid.
-      xaxis: { title: L.index_2, range: [0, Math.max(...data.index_2)], ...GRID_WHITE },
-      yaxis: { title: L.index_1, range: [0, Math.max(...data.index_1)], ...GRID_WHITE },
-      zaxis: { title: L.value, range: [0, zmax], ...GRID_WHITE },
+      ...axisXY,
+      zaxis: { title: L.value, range: [zlo, zhi], ...GRID_WHITE },
     },
   }, { responsive: true });
 }
