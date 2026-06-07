@@ -74,7 +74,7 @@ ul.tree { padding-left: 0; }
 .leaf .toggle { visibility: hidden; cursor: default; }
 .meta-inline { color: var(--muted); font-size: 11px; }
 
-#main { flex: 1; overflow: auto; padding: 8px 16px; }
+#main { flex: 1; overflow: auto; padding: 8px 16px; position: relative; }
 #devbar { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 #dump-debug {
   font: inherit;
@@ -189,6 +189,19 @@ h3.section { margin: 2px 0; font-size: 12px; color: var(--muted); font-weight: 6
 .cell-top { display: flex; gap: 16px; align-items: flex-start; }
 .cell-left { flex: 0 0 auto; }
 .cell-left table.pg { margin-top: 6px; }
+/* Top bar: devbar + breadcrumb. The cell symbol floats top-right over the
+   content (out of flow, click-through) so it never costs vertical space. */
+#topbar { margin-bottom: 6px; }
+#cell-symbol {
+  position: absolute;
+  top: 6px;
+  right: 12px;
+  z-index: 5;
+  pointer-events: none;
+  margin: 0;
+}
+#cell-symbol:empty { display: none; }
+
 .cell-sym {
   margin-left: auto;
   min-width: 0;
@@ -200,7 +213,10 @@ h3.section { margin: 2px 0; font-size: 12px; color: var(--muted); font-weight: 6
   gap: 0;
 }
 .cell-sym .sym { width: fit-content; }
-.cell-sym .sym-title { color: var(--fg); font-size: 12px; margin-bottom: 2px; white-space: nowrap; text-align: center; }
+/* Wrap long equations at minterm (` + `) boundaries only; max-width is pinned
+   to the SVG width in JS so the text never widens the symbol display. */
+.cell-sym .sym-title { color: var(--fg); font-size: 12px; margin-bottom: 2px; white-space: normal; text-align: right; margin-left: auto; }
+.cell-sym .sym-title .mt { white-space: nowrap; }
 .cell-sym svg { display: block; font-size: 12px; }
 .cell-sym .gate { fill: #2b2b32; stroke: var(--fg); stroke-width: 1.6; }
 .cell-sym .gate2 { fill: none; stroke: var(--fg); stroke-width: 1.6; }

@@ -149,7 +149,7 @@ function cellNode(name) {
     const cd = await ensure();
     renderAttrs(cd);
     if (cd.pg_pins) renderPgPins(cd.pg_pins);
-    renderCellSymbol(cd);
+    showCellSymbolFor(name);
     showSource(name, { kind: "path", path: [], label: `${name} · cell` });
     setCrumb([LIB_NAME, name]);
   };
@@ -177,6 +177,7 @@ function treeNode(node, cellName, crumb) {
   if (node.type === "table") {
     row.onclick = () => {
       selectRow(li);
+      showCellSymbolFor(cellName);
       loadTable(cellName, node.ref);
       showSource(cellName, node.src);
       setCrumb(trail);
@@ -188,6 +189,7 @@ function treeNode(node, cellName, crumb) {
   if (node.type === "leakage") {
     row.onclick = () => {
       selectRow(li);
+      showCellSymbolFor(cellName);
       renderLeakage(node.leakage);
       showSource(cellName, node.src);
       setCrumb(trail);
@@ -221,6 +223,7 @@ function treeNode(node, cellName, crumb) {
   }
   row.onclick = () => {
     selectRow(li);
+    showCellSymbolFor(cellName);
     // A node carries its own scalar attributes (pin caps, arc meta, …) — show
     // them in the main view.
     if (node.attributes && node.attributes.length) renderAttrs(node);
@@ -249,15 +252,37 @@ function renderAttrs(node) {
   view.appendChild(t);
 }
 
-// Cell symbol, placed in the same row as the cell attribute table (right-
-// justified, height-matched). Sequential cells (flip-flop / latch) render a
-// box symbol; combinational cells render each output pin's boolean function as
-// a gate schematic.
+// Cell symbol, rendered into the persistent #cell-symbol bar at the top so it
+// stays visible while navigating the cell's pins/tables (not only when the cell
+// line is selected). Sequential cells (flip-flop / latch) render a box symbol;
+// combinational cells render each output pin's boolean function as a gate
+// schematic.
 const FIT_H = [90, 280];
+let currentSymCell = null;
+
+const escHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// Equation HTML where each minterm is an unbreakable span, so the line only
+// wraps at the ` + ` separators (never inside a minterm — `!` is otherwise a
+// soft-wrap opportunity).
+function eqHtml(label, func) {
+  const terms = String(func).split(" + ").map((m) => `<span class="mt">${escHtml(m)}</span>`);
+  return `${escHtml(label)} = ${terms.join(" + ")}`;
+}
+
+// Show the owning cell's symbol; cheap no-op if it's already displayed.
+function showCellSymbolFor(cellName) {
+  if (cellName === currentSymCell) return;
+  const cd = debugState.openCells[cellName];
+  if (!cd) return;
+  currentSymCell = cellName;
+  renderCellSymbol(cd);
+}
+
 function renderCellSymbol(cellData) {
-  const view = document.getElementById("view");
-  const table = view.querySelector("table.attrs:not(.pg)");
-  if (!table) return;
+  const host = document.getElementById("cell-symbol");
+  if (!host) return;
+  host.innerHTML = "";
 
   let inner = "";
   if (cellData.seq && typeof seqSymbolSvg === "function") {
@@ -282,7 +307,7 @@ function renderCellSymbol(cellData) {
         } catch (e) {
           body = `<div class="muted">${e.message}</div>`;
         }
-        return `<div class="sym"><div class="sym-title">${n.label} = ${n.meta.function}</div>${body}</div>`;
+        return `<div class="sym"><div class="sym-title">${eqHtml(n.label, n.meta.function)}</div>${body}</div>`;
       })
       .join("");
   } else {
@@ -292,25 +317,22 @@ function renderCellSymbol(cellData) {
   const box = document.createElement("div");
   box.className = "cell-sym";
   box.innerHTML = inner;
-
-  // Flex row: left column (attribute table + pg_pin table stacked) | symbol.
-  const row = document.createElement("div");
-  row.className = "cell-top";
-  table.parentNode.insertBefore(row, table);
-  const left = document.createElement("div");
-  left.className = "cell-left";
-  left.appendChild(table);
-  const pg = view.querySelector("table.attrs.pg");
-  if (pg) left.appendChild(pg);
-  row.appendChild(left);
-  row.appendChild(box);
+  host.appendChild(box);
 
   // Height: near natural size, clamped to FIT_H px. The label font is baked in
-  // user units (fitHeight) so it lands at ~12px on screen.
-  box.querySelectorAll("svg").forEach((s) => {
-    const vbH = Number((s.getAttribute("viewBox") || "0 0 0 0").split(/\s+/)[3]) || 120;
-    s.setAttribute("height", Math.round(Math.min(FIT_H[1], Math.max(FIT_H[0], vbH))));
+  // user units (fitHeight) so it lands at ~12px on screen. Cap each equation
+  // title to its SVG's rendered width so the text wraps within the symbol
+  // instead of stretching the display.
+  box.querySelectorAll(".sym").forEach((sym) => {
+    const s = sym.querySelector("svg");
+    if (!s) return;
+    const vb = (s.getAttribute("viewBox") || "0 0 0 0").split(/\s+/).map(Number);
+    const vbW = vb[2] || 1, vbH = vb[3] || 120;
+    const hPx = Math.round(Math.min(FIT_H[1], Math.max(FIT_H[0], vbH)));
+    s.setAttribute("height", hPx);
     s.removeAttribute("width");
+    const title = sym.querySelector(".sym-title");
+    if (title) title.style.maxWidth = Math.round((hPx * vbW) / vbH) + "px";
   });
 }
 
@@ -578,13 +600,15 @@ function renderLine(view, data, ref) {
   const L = labels(data);
   const div = document.createElement("div");
   view.appendChild(div);
+  // Power is energy (fJ); always keep 0 on the y-axis so magnitudes read true.
+  const isPower = /power/.test(data.table || "");
   Plotly.newPlot(div, [{ x: data.index_1, y: data.values, mode: "lines+markers", line: { color: "#5aa9e6" } }], {
     ...PLOT_LAYOUT,
     height: PLOT_H,
     margin: { ...PLOT_LAYOUT.margin, t: 32 },
     title: L.value,
-    xaxis: { title: L.index_1 },
-    yaxis: { title: L.value },
+    xaxis: { title: { text: L.index_1, standoff: 6 }, automargin: true },
+    yaxis: { title: { text: L.value, standoff: 12 }, automargin: true, rangemode: isPower ? "tozero" : "normal" },
   }, { responsive: true });
 }
 
@@ -592,6 +616,7 @@ function renderHeatmap(view, data, ref) {
   const L = labels(data);
   const hover = `${L.index_1}=%{y}<br>${L.index_2}=%{x}<br>${L.value}=%{z}<extra></extra>`;
   const heat = document.createElement("div");
+  heat.style.width = "65%"; // leave room for the top-right floating cell symbol
   view.appendChild(heat);
   Plotly.newPlot(heat, [{
     z: data.values, x: data.index_2, y: data.index_1,
@@ -656,14 +681,20 @@ function renderHeatmap(view, data, ref) {
     const rails = data.rails;
     const kscale = data.r_scale_kohm || 1; // raw (V / current_unit) -> kohm
     const dvMin = rails ? 0.1 * (rails.vdd - rails.vss) : 0;
+    const R_MAX_KOHM = 10; // drop implausibly large resistances (near I->0)
     const R = data.index_1.map((vin, i) =>
       data.index_2.map((vout, j) => {
         const I = data.values[i][j];
         if (!I) return null;
-        if (!rails) return (Math.abs(vin - vout) / Math.abs(I)) * kscale;
-        if (Math.abs(vin - vout) < dvMin) return null;
-        const vrail = I > 0 ? rails.vdd : rails.vss;
-        return ((vrail - vout) / I) * kscale;
+        let r;
+        if (!rails) {
+          r = (Math.abs(vin - vout) / Math.abs(I)) * kscale;
+        } else {
+          if (Math.abs(vin - vout) < dvMin) return null;
+          const vrail = I > 0 ? rails.vdd : rails.vss;
+          r = ((vrail - vout) / I) * kscale;
+        }
+        return r > R_MAX_KOHM ? null : r;
       })
     );
     const rz = [];

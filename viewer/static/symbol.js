@@ -81,7 +81,34 @@
     let maxDepth = 0;
     nodes.forEach((r) => (maxDepth = Math.max(maxDepth, r.node.depth)));
     nodes.forEach((r) => (r.node.y = 14 + r.node.row * dy));
-    const H = 14 + (row - 1) * dy + 14; // top + content span (not row count) + bottom
+
+    // Per-gate geometry: body spans its input rows; floor the height so a
+    // single-row gate (buffer/inverter) doesn't render as a flat pancake, then
+    // widen to keep w >= ratio*h. Recenter on the gate row when floored.
+    const minGH = gateW * 0.82;
+    let maxW = gateW;
+    nodes.forEach((r) => {
+      const nd = r.node;
+      if (nd.kind !== "gate") return;
+      const ys = nd.inputs.map((c) => c.node.y).concat(nd.y);
+      nd.gtop = Math.min(...ys) - pad;
+      nd.gh = Math.max(...ys) + pad - nd.gtop;
+      if (nd.gh < minGH) { nd.gh = minGH; nd.gtop = nd.y - minGH / 2; }
+      nd.gw = Math.max(gateW, nd.gh * ratio);
+      if (nd.gw > maxW) maxW = nd.gw;
+    });
+
+    // Vertical extent from gate bodies + pins (gates can overhang their rows).
+    let yTop = 14, yBot = 14;
+    nodes.forEach((r) => {
+      const nd = r.node;
+      const t = nd.kind === "gate" ? nd.gtop : nd.y;
+      const bb = nd.kind === "gate" ? nd.gtop + nd.gh : nd.y;
+      yTop = Math.min(yTop, t);
+      yBot = Math.max(yBot, bb);
+    });
+    const y0 = yTop - pad;
+    const H = yBot + pad - y0;
 
     // Font: target ~12px on screen. If opt.fitHeight=[min,max] (the viewer caps
     // the SVG's pixel height), enlarge the user-unit font to compensate for the
@@ -99,20 +126,9 @@
     nodes.forEach((r) => { if (r.node.kind === "in") maxName = Math.max(maxName, String(r.node.name).length); });
     const padX = Math.max(26, maxName * fontUser * 0.62 + 12);
 
-    // Per-gate geometry: body spans its input rows; widen to keep w >= ratio*h.
-    let maxW = gateW;
-    nodes.forEach((r) => {
-      const nd = r.node;
-      if (nd.kind !== "gate") return;
-      const ys = nd.inputs.map((c) => c.node.y).concat(nd.y);
-      nd.gtop = Math.min(...ys) - pad;
-      nd.gh = Math.max(...ys) + pad - nd.gtop;
-      nd.gw = Math.max(gateW, nd.gh * ratio);
-      if (nd.gw > maxW) maxW = nd.gw;
-    });
     const dx = Math.max(dx0, maxW + 36); // keep columns clear of the widest gate
     nodes.forEach((r) => (r.node.x = padX + (maxDepth - r.node.depth) * dx));
-    return { root, nodes, W: padX + maxDepth * dx + maxW + 80, H, gateW, dy, fontUser, dots: opt.dots ?? true };
+    return { root, nodes, W: padX + maxDepth * dx + maxW + 80, H, y0, gateW, dy, fontUser, dots: opt.dots ?? true };
   }
 
   const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -154,7 +170,10 @@
     o.push(pin(ox, ry)); // output dot on the bubble's outer edge when inverted
     o.push(wire(ox, ry, ox + 30, ry));
     o.push(`<text class="lbl out" x="${ox + 36}" y="${ry + 4}">${esc(outLabel || "Y")}</text>`);
-    return `<svg viewBox="0 0 ${W} ${H}" style="font-size:${L.fontUser}px" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace, monospace">${o.join("")}</svg>`;
+    // Trim trailing whitespace: the output label is the rightmost element, so the
+    // viewBox width is its right edge (not the looser column-spacing W).
+    const Wt = Math.ceil(ox + 36 + esc(outLabel || "Y").length * L.fontUser * 0.62 + 6);
+    return `<svg viewBox="0 ${L.y0} ${Wt} ${H}" style="font-size:${L.fontUser}px" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace, monospace">${o.join("")}</svg>`;
   }
 
   function gateGlyph(type, L, T, w, h) {

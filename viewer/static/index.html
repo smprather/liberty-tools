@@ -20,12 +20,15 @@
   </div>
 
   <div id="main">
-    <div id="devbar" class="hidden">
-      <button id="dump-debug" title="Write the current page state to liberty_view_debug.json">Dump Debug</button>
-      <button id="dev-reload" title="Re-exec the server (pick up rebuilt code), then reload">Reload</button>
-      <span id="dump-status" class="muted"></span>
+    <div id="topbar">
+      <div id="devbar" class="hidden">
+        <button id="dump-debug" title="Write the current page state to liberty_view_debug.json">Dump Debug</button>
+        <button id="dev-reload" title="Re-exec the server (pick up rebuilt code), then reload">Reload</button>
+        <span id="dump-status" class="muted"></span>
+      </div>
+      <div id="crumb" class="muted">Select a table from the tree.</div>
+      <div id="cell-symbol"></div>
     </div>
-    <div id="crumb" class="muted">Select a table from the tree.</div>
     <div id="view"></div>
     <div id="wave-section" class="hidden">
       <div id="wave-title" class="muted"></div>
