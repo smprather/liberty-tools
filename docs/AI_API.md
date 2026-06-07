@@ -26,7 +26,8 @@ doc.cell(name: str) -> Cell
 doc.bus_types() -> list[str]
 doc.bus_type(name: str) -> BusType
 doc.timing_tables(...) -> list[dict[str, object]]
-doc.to_polars(kind="timing", **filters) -> polars.DataFrame
+doc.internal_power_tables(...) -> list[dict[str, object]]
+doc.to_polars(kind="timing", **filters) -> polars.DataFrame   # kind="power" for energy
 
 cell.name -> str
 cell.area -> float | None
@@ -41,6 +42,7 @@ pin.name -> str
 pin.direction -> str | None
 pin.function -> str | None
 pin.timing_arcs(related_pin=None, timing_type=None, when=None) -> list[TimingArc]
+pin.internal_power() -> list[InternalPower]
 
 bus.name -> str
 bus.direction -> str | None
@@ -67,6 +69,7 @@ arc.timing_type -> str | None
 arc.when -> str | None
 arc.tables() -> list[str]
 arc.table(name: str) -> TimingTable
+arc.ccsn_stages() -> list[CcsnStage]   # CCS-noise stages (CCSN libraries)
 
 table.name -> str
 table.index_1 -> list[float]
@@ -156,6 +159,13 @@ for type_name in doc.bus_types():
 
 Nested bus or bundle pins are exposed through `bus.pins()` / `bundle.pins()`.
 Timing tables attached to nested pins are included by `doc.to_polars(...)`.
+
+## Power (Switching Energy)
+
+`internal_power` table values are switching *energy* in joules, not power.
+Extract with `doc.to_polars(kind="power", ...)` or `doc.internal_power_tables(...)`;
+rows carry `related_pg_pin`. Non-propagating energy (an input pin switches with
+no output switch) is included with a null `related_pin`.
 
 ## 3-Axis Tables
 

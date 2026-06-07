@@ -40,8 +40,10 @@ Liberty boolean grammar. Precedence low → high: OR < XOR < AND < NOT.
 - `render.js` — IEEE distinctive-shape gates + bubbles → SVG string.
 - `main.js` — live demo glue + SVG download.
 
-`build(text)` (in `main.js`) returns the SVG string for embedding (e.g. the
-liberty-tools viewer could render a pin's `function` as a symbol).
+`build(text)` (in `main.js`) returns the SVG string for embedding. The
+liberty-tools viewer already does this: `viewer/static/symbol.js` is a
+hand-synced port of `src/*` (`functionToSvg`) — keep the two in step when
+either changes.
 
 ## Not done yet / ideas
 

@@ -53,10 +53,10 @@ SemVer version, not a `-dev` version.
 
 ## CLI Version Output
 
-`liberty_filter --version` prints the Cargo/package version:
+`liberty_format --version` prints the Cargo/package version:
 
 ```text
-liberty_filter 1.0.1-dev
+liberty_format 1.0.1-dev
 ```
 
 On release-tagged commits, this should print the stable SemVer version for that

@@ -5,14 +5,19 @@ Liberty `.lib` timing models. It streams Liberty files through a Rust backend
 and exposes a Python API for cells, pins, timing arcs, timing tables, and Polars
 dataframe extraction.
 
-The current implementation focuses on standard-cell timing data:
+The current implementation focuses on standard-cell timing, power, and CCS data:
 
 - streaming parse from `.lib` and `.lib.gz` paths
-- low-memory Rust-backed indexing
+- low-memory Rust-backed indexing with on-demand cell parsing (`LibraryIndex`)
 - cell, pin, and timing arc lookup
 - bus, bundle, and Liberty `type(...)` bus definition lookup
 - 1D, 2D, and 3D timing table extraction to Python rows or Polars
+- `internal_power` extraction (switching energy in joules)
+- CCS data: `output_current_*` waves, CCSP dynamic current, and CCS-noise
+  (CCSN) stage data (`dc_current`, `output_voltage_*`)
 - Boolean-aware `when` filtering
+- the GIL is released during parsing, so many libraries can be opened in
+  parallel threads
 
 For LLM/agent-oriented API usage, see [docs/AI_API.md](docs/AI_API.md).
 The package also ships `py.typed` and `.pyi` stubs for coding tools.
@@ -22,8 +27,10 @@ The package also ships `py.typed` and `.pyi` stubs for coding tools.
 This is an early implementation. The parser is already useful for large timing
 libraries, but the public API should still be treated as pre-1.0.
 
-On the local 96.8 MB reference Liberty file, the release extension currently
-parses and indexes the file in about 1.2 seconds with about 44 MB RSS.
+On the local 96.8 MB reference Liberty file, the release extension parses the
+whole library into an in-memory document in about 1.5 seconds (~150 MB peak
+RSS). The lazy `LibraryIndex` used by the viewer opens the same file in about
+0.15 seconds and parses individual cells on demand.
 
 ## Install From GitHub
 
@@ -178,7 +185,8 @@ doc.library_name
 doc.cells()
 doc.cell(name)
 doc.timing_tables(...)
-doc.to_polars(kind="timing", ...)
+doc.internal_power_tables(...)
+doc.to_polars(kind="timing", ...)   # or kind="power"
 
 cell.name
 cell.area
@@ -210,12 +218,14 @@ pin.name
 pin.direction
 pin.function
 pin.timing_arcs(related_pin=None, timing_type=None, when=None)
+pin.internal_power()
 
 arc.related_pin
 arc.timing_type
 arc.when
 arc.tables()
 arc.table(name)
+arc.ccsn_stages()                   # CCS-noise stage data (CCSN libs)
 
 table.name
 table.index_1
