@@ -35,7 +35,23 @@ const UNDISPLAYED_DATA = new Set([]);
 const SOURCE_MAX_LINES = 1000;
 
 async function api(path) {
-  const res = await fetch(path);
+  // Retry only transport-level failures (fetch rejects with TypeError:
+  // "NetworkError when attempting to fetch resource"). On first startup the
+  // browser opens the instant the static shell is served, a hair before the
+  // loopback worker reliably accepts API calls (WSLg makes this race worse), so
+  // the very first /api/* can drop. A short backoff lets boot self-heal instead
+  // of painting "NetworkError" into the UI. HTTP errors (404/500) are NOT
+  // transport failures — they resolve with !res.ok and throw immediately.
+  let res;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetch(path);
+      break;
+    } catch (e) {
+      if (attempt >= 5) throw e;
+      await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+    }
+  }
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json();
 }
@@ -173,6 +189,19 @@ function treeNode(node, cellName, crumb) {
     else if (node.meta.area != null) metaStr = ` <span class="meta-inline">A=${node.meta.area}</span>`;
   }
   row.innerHTML = `<span class="toggle">${tog}</span>${node.label}${metaStr}`;
+
+  if (node.multi) {
+    // Collapsed branch: several 1-D line tables plotted together with a legend.
+    row.onclick = () => {
+      selectRow(li);
+      showCellSymbolFor(cellName);
+      loadMultiTable(cellName, node.multi, node.ylabel);
+      showSource(cellName, node.src, node.multi.map((m) => m.ref.table));
+      setCrumb(trail);
+    };
+    li.appendChild(row);
+    return li;
+  }
 
   if (node.type === "table") {
     row.onclick = () => {
@@ -609,6 +638,50 @@ function renderLine(view, data, ref) {
     title: L.value,
     xaxis: { title: { text: L.index_1, standoff: 6 }, automargin: true },
     yaxis: { title: { text: L.value, standoff: 12 }, automargin: true, rangemode: isPower ? "tozero" : "normal" },
+  }, { responsive: true });
+}
+
+// Several 1-D line tables on one plot, differentiated by legend (e.g. a power
+// pg node's rise_power + fall_power -> y-axis "power", legend "rise"/"fall").
+async function loadMultiTable(cell, items, ylabel) {
+  try {
+    const datas = await Promise.all(
+      items.map((it) => {
+        const r = it.ref;
+        const params = new URLSearchParams({
+          cell, pin: r.pin, group: r.group, arc_index: r.arc_index,
+          table: r.table, container: r.container || "",
+        });
+        return api(`/api/table?${params}`);
+      })
+    );
+    debugState.lastTable = { cell, multi: items, ylabel, datas };
+    renderMultiLine(datas, items.map((i) => i.name), ylabel);
+  } catch (e) {
+    document.getElementById("view").innerHTML =
+      `<div class="muted">table error: ${e.message}</div>`;
+  }
+}
+
+function renderMultiLine(datas, names, ylabel) {
+  const view = document.getElementById("view");
+  view.innerHTML = "";
+  hideWave();
+  const div = document.createElement("div");
+  view.appendChild(div);
+  const isPower = datas.some((d) => /power/.test(d.table || ""));
+  const L0 = labels(datas[0]);
+  const traces = datas.map((d, i) => ({
+    x: d.index_1, y: d.values, mode: "lines+markers", name: names[i],
+  }));
+  Plotly.newPlot(div, traces, {
+    ...PLOT_LAYOUT,
+    height: PLOT_H,
+    margin: { ...PLOT_LAYOUT.margin, t: 32 },
+    title: ylabel,
+    xaxis: { title: { text: L0.index_1, standoff: 6 }, automargin: true },
+    yaxis: { title: { text: ylabel, standoff: 12 }, automargin: true, rangemode: isPower ? "tozero" : "normal" },
+    legend: { font: { size: 11 } },
   }, { responsive: true });
 }
 
@@ -1156,7 +1229,7 @@ function _breakLines(text) {
   return out;
 }
 
-async function showSource(cell, src) {
+async function showSource(cell, src, keep) {
   src = src || { kind: "cell", name: cell };
   const sec = document.getElementById("source-section");
   const title = document.getElementById("source-title");
@@ -1176,7 +1249,9 @@ async function showSource(cell, src) {
   title.textContent = "";  // label dropped to save vertical space
   const templates = (debugState.meta && debugState.meta.templates) || {};
   // Strip child groups shown elsewhere; break run-on statements; drop blanks.
-  let text = _stripNavGroups(_walkPath(d.text, path), NAV_GROUPS);
+  // `keep` (e.g. a collapsed multi-line node's own tables) stays in the source.
+  const nav = keep && keep.length ? new Set([...NAV_GROUPS].filter((g) => !keep.includes(g))) : NAV_GROUPS;
+  let text = _stripNavGroups(_walkPath(d.text, path), nav);
   text = _breakLines(text);
   text = text.split("\n").filter((l) => l.trim() !== "").join("\n");
   text = _annotateIndices(text, templates);
@@ -1312,9 +1387,16 @@ initDevBar();
 // close. A refresh fires the beacon too, but the reloaded page re-pings inside
 // the server's grace window, so it survives. (Disabled by --no-exit-on-close.)
 function heartbeat() {
-  fetch("/api/ping").catch(() => {});
+  // sendBeacon (not fetch) so the periodic ping doesn't spin the tab throbber,
+  // which WSLg surfaces as a taskbar "attention" blip. Falls back to fetch.
+  if (navigator.sendBeacon) navigator.sendBeacon("/api/ping");
+  else fetch("/api/ping", { method: "POST" }).catch(() => {});
 }
 heartbeat();
 setInterval(heartbeat, 5000);
 addEventListener("pageshow", heartbeat);
+// Background tabs throttle/pause the interval; re-ping the moment the tab is
+// visible/focused again so the server's idle watchdog doesn't fire on return.
+addEventListener("visibilitychange", () => { if (!document.hidden) heartbeat(); });
+addEventListener("focus", heartbeat);
 addEventListener("pagehide", () => navigator.sendBeacon("/api/bye"));

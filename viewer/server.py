@@ -32,13 +32,23 @@ DEBUG_DUMP = Path("/tmp/liberty_view_debug.json")
 # it sends a `/api/bye` beacon. We exit once `_deadline` passes — heartbeats push
 # it forward, `bye` pulls it in (but leaves a grace window so a refresh, which
 # also fires the beacon, can re-ping and cancel the shutdown). No websockets.
-_IDLE_TIMEOUT = 15.0  # no heartbeat for this long -> client assumed gone
+# Background tabs throttle setInterval (often to <=1/min, sometimes paused), so
+# the idle timeout must be comfortably longer than that or switching away from
+# the tab for a bit looks like a "random" shutdown. `bye` still exits promptly
+# on a real tab close.
+_IDLE_TIMEOUT = 90.0  # no heartbeat for this long -> client assumed gone
 _CLOSE_GRACE = 4.0  # after a `bye`, wait this long for a reload to re-ping
 _deadline: float | None = None  # monotonic exit time; None = watchdog disabled
+_last_ping: float | None = None  # monotonic of last heartbeat (for --dev logs)
 
 
 def _dev_enabled() -> bool:
     return os.environ.get("LIBERTY_DEV") == "1"
+
+
+def _log(msg: str) -> None:
+    if _dev_enabled():
+        print(f"[viewer] {msg}", flush=True)
 
 
 def _bump(seconds: float) -> None:
@@ -51,6 +61,8 @@ async def _watchdog() -> None:
     while True:
         await asyncio.sleep(1.0)
         if _deadline is not None and time.monotonic() > _deadline:
+            last = "never" if _last_ping is None else f"{time.monotonic() - _last_ping:.1f}s ago"
+            _log(f"watchdog fired (last ping {last}, idle timeout {_IDLE_TIMEOUT}s) -> SIGINT")
             # SIGINT -> uvicorn graceful shutdown (same as Ctrl-C).
             signal.raise_signal(signal.SIGINT)
             return
@@ -63,6 +75,7 @@ async def lifespan(app: FastAPI):
     if os.environ.get("LIBERTY_EXIT_ON_CLOSE") == "1":
         _deadline = time.monotonic() + _IDLE_TIMEOUT  # grace for first page load
         task = asyncio.create_task(_watchdog())
+        _log(f"exit-on-close watchdog armed (idle timeout {_IDLE_TIMEOUT}s)")
     yield
     if task:
         task.cancel()
@@ -144,9 +157,16 @@ def table(
         raise HTTPException(404, f"table not found: {exc}")
 
 
-@app.get("/api/ping")
+@app.post("/api/ping")
 def ping():
-    """Client heartbeat — keeps the exit-on-close watchdog from firing."""
+    """Client heartbeat — keeps the exit-on-close watchdog from firing. POST so
+    the client can use navigator.sendBeacon (no fetch throbber that blips the
+    WSLg taskbar)."""
+    global _last_ping
+    now = time.monotonic()
+    if _dev_enabled():
+        _log(f"ping ({'first' if _last_ping is None else f'+{now - _last_ping:.1f}s'})")
+    _last_ping = now
     _bump(_IDLE_TIMEOUT)
     return {"ok": True}
 
@@ -155,6 +175,7 @@ def ping():
 async def bye():
     """Tab-close beacon — pull the exit deadline in to a short grace window (a
     refresh fires this too, but its reload re-pings before the grace elapses)."""
+    _log(f"bye beacon -> grace {_CLOSE_GRACE}s")
     _bump(_CLOSE_GRACE)
     return {"ok": True}
 

@@ -10,6 +10,7 @@ one table at a time.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -200,6 +201,33 @@ def _si_scale(unit: str | None) -> float | None:
     return mag * prefix
 
 
+def _split_common_label(names: list[str]) -> tuple[str, list[str]]:
+    """Split table names into a shared base (common leading/trailing `_` tokens)
+    and the per-name distinguishing middle. `["rise_power", "fall_power"]` ->
+    `("power", ["rise", "fall"])`."""
+    toks = [n.split("_") for n in names]
+    pre: list[str] = []
+    for col in zip(*toks):
+        if len(set(col)) == 1:
+            pre.append(col[0])
+        else:
+            break
+    suf: list[str] = []
+    for col in zip(*[t[::-1] for t in toks]):
+        if len(set(col)) == 1:
+            suf.append(col[0])
+        else:
+            break
+    suf.reverse()
+    p, s = len(pre), len(suf)
+    base = "_".join(pre + suf) or "value"
+    legends = []
+    for t in toks:
+        mid = t[p: len(t) - s] if p + s < len(t) else t
+        legends.append("_".join(mid))
+    return base, legends
+
+
 @dataclass
 class LibertyData:
     path: str
@@ -364,8 +392,43 @@ class LibertyData:
         node["children"].extend(self._ccsp_nodes(cell))
         # Each node carries the source scope (cell/pin/bus/bundle group) to show
         # in the bottom pane; descendants inherit their nearest named ancestor.
+        self._collapse_line_groups(node, cell_name)
         _propagate_src(node, node["src"])
         return node
+
+    def _collapse_line_groups(self, node: dict[str, Any], cell_name: str) -> None:
+        """Collapse a branch whose children are all 1-D `power` line tables into a
+        single multi-curve leaf (e.g. `pg=VDD` -> rise_power + fall_power on one
+        plot, legend `rise`/`fall`). The children are removed; the branch becomes
+        the leaf. `timing` group is skipped (its tables are 2-D/CCS and the probe
+        would clone large CCS data)."""
+        kids = node.get("children")
+        if not kids:
+            return
+        for k in kids:
+            self._collapse_line_groups(k, cell_name)
+        if len(kids) < 2 or not all(
+            k.get("type") == "table" and (k.get("ref") or {}).get("group") == "power"
+            for k in kids
+        ):
+            return
+        try:
+            payloads = [
+                self.table(
+                    cell_name, r["pin"], r["group"], r["arc_index"], r["table"], r.get("container", "")
+                )
+                for r in (k["ref"] for k in kids)
+            ]
+        except Exception:
+            return
+        if not all(p.get("ndim") == 1 for p in payloads):
+            return
+        base, legends = _split_common_label([k["ref"]["table"] for k in kids])
+        m = re.search(r"\(([^)]*)\)", (payloads[0].get("labels") or {}).get("value", ""))
+        node["multi"] = [{"ref": k["ref"], "name": lg} for k, lg in zip(kids, legends)]
+        node["ylabel"] = base + (f" ({m.group(1)})" if m else "")
+        node["leaf"] = True
+        node.pop("children", None)
 
     @staticmethod
     def _lit(expr: str | None) -> dict[str, Any] | None:

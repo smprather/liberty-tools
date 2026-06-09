@@ -215,7 +215,7 @@ h3.section { margin: 2px 0; font-size: 12px; color: var(--muted); font-weight: 6
 .cell-sym .sym { width: fit-content; }
 /* Wrap long equations at minterm (` + `) boundaries only; max-width is pinned
    to the SVG width in JS so the text never widens the symbol display. */
-.cell-sym .sym-title { color: var(--fg); font-size: 12px; margin-bottom: 2px; white-space: normal; text-align: right; margin-left: auto; }
+.cell-sym .sym-title { color: var(--fg); font-size: 12px; margin-bottom: 2px; white-space: normal; text-align: left; margin-left: auto; }
 .cell-sym .sym-title .mt { white-space: nowrap; }
 .cell-sym svg { display: block; font-size: 12px; }
 .cell-sym .gate { fill: #2b2b32; stroke: var(--fg); stroke-width: 1.6; }
