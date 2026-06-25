@@ -24,6 +24,20 @@ uv run ty check
 
 The large-file smoke tests need `generic80_ss_125c_1p116v_0p84v.lib` in the repo root; they skip otherwise.
 
+Frontend-only sanity checks:
+
+```bash
+node --check viewer/static/app.js
+node --check viewer/static/symbol.js
+node --check logic2svg/src/layout.js
+node --check logic2svg/src/render.js
+uv run pytest -q tests/test_symbol_render.py
+```
+
+## Screen grabs
+
+When the user says "look at the grab" or references a current screen grab, view the most recently modified image file in `/mnt/c/Users/myles/Pictures/Screenshots`.
+
 ## Architecture
 
 This is a **maturin/PyO3 hybrid**: all parsing and data storage lives in Rust (`src/lib.rs`); Python is a thin wrapper.
@@ -49,6 +63,38 @@ There are two parallel type hierarchies: `*Data` (plain Rust structs, no PyO3 ov
 ### Python layer (`liberty_tools/__init__.py`)
 
 Each class wraps the corresponding native object via `self._native`. `LibertyDocument.to_polars()` calls `timing_tables()` and hands the result to `polars.DataFrame`. `parse_file` is the sole public entry point.
+
+### Browser viewer (`viewer/`)
+
+`viewer/server.py` is the FastAPI backend. `viewer/data.py` converts native
+Liberty objects into JSON payloads for the static SPA in `viewer/static/`.
+
+Static asset roles:
+
+- `viewer/static/index.html` owns the shell layout. It must include
+  `#content-grid`, `#view`, `#symbol-column #cell-symbol`, `#wave-section`, and
+  `#source-section`; `app.js` and `style.css` assume that structure.
+- `viewer/static/app.js` renders the tree, tables, Plotly plots, source pane,
+  and cell-symbol panel.
+- `viewer/static/symbol.js` is a hand-synced browser port of `logic2svg/src/*`.
+  When logic-symbol parse/lower/layout/render behavior changes, update both
+  copies and run `tests/test_symbol_render.py`.
+
+2D table views keep the heatmap visible at the top. The lower plot defaults to
+the existing 3D surface and can toggle to 2D wave families grouped by either
+axis. `dc_current` remains special in 3D mode: current surface plus derived
+resistance surface; 2D mode plots only raw current values.
+
+Logic-symbol rendering lessons learned:
+
+- Prefer output bubbles over input bubbles when an inverted child is a gate.
+  Only leaf/variable inversion stays as an input bubble.
+- Bubble radius is fixed at 4 SVG units; never derive it from row spacing.
+- Equation text must never drive symbol/card width. Width comes from SVG
+  geometry only; equation titles wrap/clamp inside that width and expose the
+  full equation via `title`.
+- Check actual screenshots/pixels for symbol work. Numeric tests catch geometry
+  regressions, but visual badness has shown up before syntax/tests failed.
 
 ### Key behaviors to preserve
 

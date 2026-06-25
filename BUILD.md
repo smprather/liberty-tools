@@ -26,6 +26,23 @@ works without internet. Refresh it with:
 curl -o viewer/static/plotly.min.js https://cdn.plot.ly/plotly-2.35.2.min.js
 ```
 
+The viewer frontend is plain JS/CSS/HTML. There is no bundler. Syntax-check
+edited static files directly:
+
+```bash
+node --check viewer/static/app.js
+node --check viewer/static/symbol.js
+node --check logic2svg/src/layout.js
+node --check logic2svg/src/render.js
+```
+
+`viewer/static/symbol.js` is a hand-synced copy of `logic2svg/src/*`. For
+logic-symbol edits, update both copies and run:
+
+```bash
+uv run pytest -q tests/test_symbol_render.py
+```
+
 ## Prerequisites
 
 - **Rust toolchain** (`rustc` + `cargo`), edition 2021.

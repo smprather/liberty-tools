@@ -18,6 +18,8 @@ The current implementation focuses on standard-cell timing, power, and CCS data:
 - Boolean-aware `when` filtering
 - the GIL is released during parsing, so many libraries can be opened in
   parallel threads
+- browser viewer for navigating cells, source text, timing/power tables,
+  CCS/CCSN waves, and combinational logic symbols
 
 For LLM/agent-oriented API usage, see [docs/AI_API.md](docs/AI_API.md).
 The package also ships `py.typed` and `.pyi` stubs for coding tools.
@@ -74,6 +76,22 @@ cargo check
 The repository does not include large Liberty reference files. If you have a
 local sample named `generic80_ss_125c_1p116v_0p84v.lib` in the repo root, the
 large-file smoke tests will run; otherwise they are skipped.
+
+Run the local browser viewer:
+
+```bash
+uv run liberty_view dev.lib
+```
+
+The viewer serves all frontend assets locally, including Plotly. It renders:
+
+- scalar tables as compact tables
+- 1D tables as line plots
+- 2D tables as a heatmap plus a lower plot that toggles between 3D surface
+  and 2D wave families
+- 3D/CCS tables as clickable grids that open wave plots
+- CCSN `dc_current` as current and derived resistance surfaces in 3D mode
+- output-pin Boolean functions as compact logic symbols
 
 ## Basic Usage
 
@@ -234,6 +252,21 @@ table.index_3
 table.values
 table.to_polars()
 ```
+
+## Viewer Notes
+
+For 2D table views, the heatmap is always shown. The lower visualization
+defaults to the 3D surface and can switch to 2D waves grouped by either table
+axis. In 2D wave mode, each trace is one fixed axis value and the y-axis is the
+table value. CCSN `dc_current` keeps its special dual-surface current/resistance
+display in 3D mode; 2D mode plots only the original current table values.
+
+Logic symbols are generated from Liberty Boolean expressions. Inversion bubbles
+are intentionally small and prefer gate outputs: if an inverted subexpression is
+itself a gate, the bubble is drawn on that source gate output rather than on the
+receiving gate input. Equation labels are constrained to the symbol width and do
+not determine the overall symbol size; the full equation is available as hover
+text in the viewer.
 
 ## Notes
 
