@@ -67,6 +67,10 @@ function setCrumb(parts) {
   document.getElementById("crumb").textContent = parts.filter(Boolean).join(" / ");
 }
 
+function setViewWide(wide) {
+  document.getElementById("content-grid")?.classList.toggle("wide-view", !!wide);
+}
+
 // ---- library meta + cell list ---------------------------------------------
 async function loadMeta() {
   const m = await api("/api/meta");
@@ -265,6 +269,7 @@ function treeNode(node, cellName, crumb) {
 }
 
 function renderAttrs(node) {
+  setViewWide(false);
   const view = document.getElementById("view");
   view.innerHTML = "";
   hideWave();
@@ -287,7 +292,13 @@ function renderAttrs(node) {
 // combinational cells render each output pin's boolean function as a gate
 // schematic.
 const FIT_H = [90, 280];
+const SYMBOL_THUMB_W = 260;
+const SYMBOL_THUMB_H = 150;
+const SYMBOL_ZOOM_FONT_PX = 16; // 12pt.
+const SYMBOL_ZOOM_MARGIN = 24;
+const SYMBOL_ZOOM_MS = 1000;
 let currentSymCell = null;
+let symbolZoom = null;
 
 const escHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -296,7 +307,7 @@ const escHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").re
 // soft-wrap opportunity).
 function eqHtml(label, func) {
   const terms = String(func).split(" + ").map((m) => `<span class="mt">${escHtml(m)}</span>`);
-  return `${escHtml(label)} = ${terms.join(" + ")}`;
+  return `<span class="sym-lhs">${escHtml(label)} =</span><span class="sym-rhs">&nbsp;${terms.join(" + ")}</span>`;
 }
 
 // Show the owning cell's symbol; cheap no-op if it's already displayed.
@@ -308,10 +319,23 @@ function showCellSymbolFor(cellName) {
   renderCellSymbol(cd);
 }
 
+function clearCellSymbol(host) {
+  closeCellSymbolZoom(false);
+  host.innerHTML = "";
+  host.style.removeProperty("--cell-symbol-frame-w");
+  host.style.removeProperty("--cell-symbol-frame-h");
+  host.removeAttribute("role");
+  host.removeAttribute("tabindex");
+  host.removeAttribute("aria-label");
+  host.onclick = null;
+  host.onkeydown = null;
+  document.getElementById("content-grid")?.classList.remove("has-cell-symbol");
+}
+
 function renderCellSymbol(cellData) {
   const host = document.getElementById("cell-symbol");
   if (!host) return;
-  host.innerHTML = "";
+  clearCellSymbol(host);
 
   let inner = "";
   if (cellData.seq && typeof seqSymbolSvg === "function") {
@@ -336,22 +360,38 @@ function renderCellSymbol(cellData) {
         } catch (e) {
           body = `<div class="muted">${e.message}</div>`;
         }
-        return `<div class="sym"><div class="sym-title">${eqHtml(n.label, n.meta.function)}</div>${body}</div>`;
+        return `<div class="sym"><div class="sym-title eq">${eqHtml(n.label, n.meta.function)}</div>${body}</div>`;
       })
       .join("");
   } else {
     return;
   }
 
+  const frame = document.createElement("div");
+  frame.className = "cell-sym-frame";
   const box = document.createElement("div");
   box.className = "cell-sym";
   box.innerHTML = inner;
-  host.appendChild(box);
+  frame.appendChild(box);
+  host.appendChild(frame);
+  document.getElementById("content-grid")?.classList.add("has-cell-symbol");
+  host.setAttribute("role", "button");
+  host.setAttribute("tabindex", "0");
+  host.setAttribute("aria-label", "Zoom cell symbol");
+  host.onclick = (e) => {
+    e.stopPropagation();
+    openCellSymbolZoom();
+  };
+  host.onkeydown = (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    openCellSymbolZoom();
+  };
 
   // Height: near natural size, clamped to FIT_H px. The label font is baked in
-  // user units (fitHeight) so it lands at ~12px on screen. Cap each equation
-  // title to its SVG's rendered width so the text wraps within the symbol
-  // instead of stretching the display.
+  // user units (fitHeight) so it lands at ~12px on screen. Width is driven only
+  // by SVG geometry; equation text wraps/clips inside that width.
+  const symMetrics = [];
   box.querySelectorAll(".sym").forEach((sym) => {
     const s = sym.querySelector("svg");
     if (!s) return;
@@ -361,8 +401,189 @@ function renderCellSymbol(cellData) {
     s.setAttribute("height", hPx);
     s.removeAttribute("width");
     const title = sym.querySelector(".sym-title");
-    if (title) title.style.maxWidth = Math.round((hPx * vbW) / vbH) + "px";
+    if (title) {
+      const svgW = Math.round((hPx * vbW) / vbH);
+      const scale = hPx / vbH;
+      const inputLabels = [...s.querySelectorAll(".lbl:not(.out)")];
+      let labelRight = 0;
+      if (inputLabels.length) {
+        try {
+          labelRight = Math.max(...inputLabels.map((label) => {
+            const anchor = parseFloat(label.getAttribute("x"));
+            if (label.getAttribute("text-anchor") === "end" && Number.isFinite(anchor)) return anchor;
+            const box = label.getBBox();
+            return box.x + box.width;
+          }));
+        } catch {
+          const fontUser = parseFloat(s.style.fontSize || getComputedStyle(s).fontSize) || 12;
+          labelRight = Math.max(...inputLabels.map((label) => {
+            const x = parseFloat(label.getAttribute("x")) || 0;
+            return label.getAttribute("text-anchor") === "end"
+              ? x
+              : x + label.textContent.length * fontUser * 0.62;
+          }));
+        }
+      }
+      const labelRightPx = Math.max(0, Math.round((labelRight - vb[0]) * scale));
+      title.style.marginLeft = "0";
+      const lhs = title.querySelector(".sym-lhs");
+      if (lhs) lhs.style.flexBasis = `${labelRightPx}px`;
+      title.style.width = "";
+      title.style.maxWidth = "";
+      symMetrics.push({
+        sym,
+        svg: s,
+        title,
+        lhs,
+        svgW,
+        labelRightPx,
+      });
+    }
   });
+  if (symMetrics.length) {
+    const labelCol = Math.max(...symMetrics.map((m) => m.labelRightPx));
+    let stackW = 1;
+    symMetrics.forEach((m) => {
+      const svgOffset = Math.max(0, labelCol - m.labelRightPx);
+      const symW = m.svgW + svgOffset;
+      m.svg.style.marginLeft = `${svgOffset}px`;
+      if (m.lhs) m.lhs.style.flexBasis = `${labelCol}px`;
+      stackW = Math.max(stackW, symW);
+    });
+    stackW = Math.ceil(stackW);
+    symMetrics.forEach((m) => {
+      m.title.style.width = `${stackW}px`;
+      m.title.style.maxWidth = `${stackW}px`;
+      m.sym.style.width = `${stackW}px`;
+    });
+  }
+  fitCellSymbolFrame(frame, box, SYMBOL_THUMB_W - 12, SYMBOL_THUMB_H - 12);
+  syncCellSymbolHostSize(host, frame);
+}
+
+function fitCellSymbolFrame(frame, box, maxW, maxH) {
+  box.style.transform = "none";
+  const r = box.getBoundingClientRect();
+  const rawW = Math.max(1, Math.ceil(box.scrollWidth || r.width));
+  const rawH = Math.max(1, Math.ceil(box.scrollHeight || r.height));
+  const scale = Math.min(1, maxW / rawW, maxH / rawH);
+  frame.style.width = `${Math.ceil(rawW * scale)}px`;
+  frame.style.height = `${Math.ceil(rawH * scale)}px`;
+  box.style.transform = `scale(${scale})`;
+  box.dataset.symRawWidth = String(rawW);
+  box.dataset.symRawHeight = String(rawH);
+  box.dataset.symThumbScale = String(scale);
+}
+
+function syncCellSymbolHostSize(host, frame) {
+  const r = frame.getBoundingClientRect();
+  const w = Math.max(1, Math.ceil(parseFloat(frame.style.width) || r.width));
+  const h = Math.max(1, Math.ceil(parseFloat(frame.style.height) || r.height));
+  host.style.setProperty("--cell-symbol-frame-w", `${w}px`);
+  host.style.setProperty("--cell-symbol-frame-h", `${h}px`);
+}
+
+function svgFontPxAtScaleOne(box) {
+  let maxPx = 12;
+  box.querySelectorAll("svg").forEach((svg) => {
+    const vb = (svg.getAttribute("viewBox") || "0 0 0 0").split(/\s+/).map(Number);
+    const vbH = vb[3] || 1;
+    const hPx = parseFloat(svg.getAttribute("height")) || svg.getBoundingClientRect().height || vbH;
+    const fontUser = parseFloat(svg.style.fontSize || getComputedStyle(svg).fontSize) || 12;
+    maxPx = Math.max(maxPx, fontUser * hPx / vbH);
+  });
+  return maxPx;
+}
+
+function symbolZoomTarget(box, rawW, rawH) {
+  const targetByFont = SYMBOL_ZOOM_FONT_PX / svgFontPxAtScaleOne(box);
+  const capByViewport = Math.min(
+    (window.innerWidth - SYMBOL_ZOOM_MARGIN * 2) / rawW,
+    (window.innerHeight - SYMBOL_ZOOM_MARGIN * 2) / rawH
+  );
+  const startScale = parseFloat(box.dataset.symThumbScale) || 1;
+  const scale = Math.max(0.1, Math.min(Math.max(startScale, targetByFont), capByViewport));
+  const w = rawW * scale;
+  const h = rawH * scale;
+  return {
+    scale,
+    left: Math.max(SYMBOL_ZOOM_MARGIN, (window.innerWidth - w) / 2),
+    top: Math.max(SYMBOL_ZOOM_MARGIN, (window.innerHeight - h) / 2),
+  };
+}
+
+function openCellSymbolZoom() {
+  const host = document.getElementById("cell-symbol");
+  const frame = host?.querySelector(".cell-sym-frame");
+  const box = frame?.querySelector(".cell-sym");
+  if (!host || !frame || !box || symbolZoom) return;
+
+  const rawW = parseFloat(box.dataset.symRawWidth) || box.scrollWidth;
+  const rawH = parseFloat(box.dataset.symRawHeight) || box.scrollHeight;
+  if (!rawW || !rawH) return;
+
+  const from = frame.getBoundingClientRect();
+  const startScale = from.width / rawW;
+  const to = symbolZoomTarget(box, rawW, rawH);
+  const backdrop = document.createElement("div");
+  backdrop.className = "symbol-zoom-backdrop";
+  const panel = document.createElement("div");
+  panel.className = "symbol-zoom-panel";
+  panel.style.width = `${rawW}px`;
+  panel.style.height = `${rawH}px`;
+  panel.style.transform = `translate(${from.left}px, ${from.top}px) scale(${startScale})`;
+
+  const clone = box.cloneNode(true);
+  clone.style.transform = "none";
+  clone.removeAttribute("data-sym-raw-width");
+  clone.removeAttribute("data-sym-raw-height");
+  clone.removeAttribute("data-sym-thumb-scale");
+  panel.appendChild(clone);
+  document.body.append(backdrop, panel);
+
+  const close = () => closeCellSymbolZoom(true);
+  symbolZoom = { backdrop, panel, rawW, rawH, close };
+  backdrop.addEventListener("click", close);
+  panel.addEventListener("click", close);
+  document.addEventListener("keydown", onCellSymbolZoomKey, true);
+
+  // Commit the thumbnail transform before applying the zoom target; otherwise
+  // some browsers batch both writes into the first paint and the open looks
+  // instant while close animates normally.
+  panel.getBoundingClientRect();
+  backdrop.getBoundingClientRect();
+  requestAnimationFrame(() => {
+    backdrop.classList.add("open");
+    panel.style.transform = `translate(${to.left}px, ${to.top}px) scale(${to.scale})`;
+  });
+}
+
+function onCellSymbolZoomKey(e) {
+  if (e.key === "Escape") closeCellSymbolZoom(true);
+}
+
+function closeCellSymbolZoom(animate) {
+  if (!symbolZoom) return;
+  const z = symbolZoom;
+  symbolZoom = null;
+  document.removeEventListener("keydown", onCellSymbolZoomKey, true);
+  const finish = () => {
+    z.backdrop.remove();
+    z.panel.remove();
+  };
+  if (!animate) {
+    finish();
+    return;
+  }
+  z.backdrop.classList.remove("open");
+  const frame = document.querySelector("#cell-symbol .cell-sym-frame");
+  if (frame) {
+    const to = frame.getBoundingClientRect();
+    z.panel.style.transform = `translate(${to.left}px, ${to.top}px) scale(${to.width / z.rawW})`;
+  } else {
+    z.panel.style.opacity = "0";
+  }
+  setTimeout(finish, SYMBOL_ZOOM_MS);
 }
 
 // pg_pin groups as a table (appended below the cell attributes).
@@ -387,6 +608,7 @@ function renderPgPins(d) {
 
 // leakage_power: a when-condition × power-rail table of static leakage values.
 function renderLeakage(d) {
+  setViewWide(false);
   const view = document.getElementById("view");
   view.innerHTML = "";
   hideWave();
@@ -517,13 +739,46 @@ function renderTable(data, ref) {
   if (data.kind === "ccs") return renderCcsGrid(view, data);
   if (data.ndim === 0) return renderScalar(view, data);
   if (data.ndim === 1) return renderLine(view, data, ref);
-  if (data.ndim === 2) return renderHeatmap(view, data, ref);
+  if (data.ndim === 2) {
+    // A 2-index table with one index pinned to a single value is really a 1-D
+    // curve — draw it as a line (not a 1-row/col heatmap) and note the fixed
+    // index in the title.
+    const flat = collapse2d(data);
+    if (flat) return renderLine(view, flat, ref);
+    return renderHeatmap(view, data, ref);
+  }
   return renderGrid(view, data, ref);
+}
+
+function fmtVal(v) {
+  return typeof v === "number" ? Number(v.toPrecision(4)).toString() : String(v);
+}
+
+// If a 2-D table has a single-valued index, return a pseudo-1-D payload over the
+// multi-valued index (with `_fixed` describing the pinned index); else null.
+function collapse2d(data) {
+  const n1 = (data.index_1 || []).length;
+  const n2 = (data.index_2 || []).length;
+  const L = labels(data);
+  if (n2 === 1 && n1 > 1) {
+    return {
+      ...data, ndim: 1, index_1: data.index_1, values: data.values.map((r) => r[0]),
+      labels: { ...L, index_1: L.index_1 }, _fixed: `${L.index_2} = ${fmtVal(data.index_2[0])}`,
+    };
+  }
+  if (n1 === 1) {
+    return {
+      ...data, ndim: 1, index_1: data.index_2, values: data.values[0],
+      labels: { ...L, index_1: L.index_2 }, _fixed: `${L.index_1} = ${fmtVal(data.index_1[0])}`,
+    };
+  }
+  return null;
 }
 
 // CCS: clickable (slew x cap) grid; each cell holds a current-vs-time wave.
 // Grid label = t95 (time current decays to 95% of peak). Click -> wave plot.
 function renderCcsGrid(view, data) {
+  setViewWide(false);
   const L = data.labels || { index_1: "slew", index_2: "cap", time: "time", current: "current" };
   const note = document.createElement("h3");
   note.className = "section";
@@ -618,6 +873,7 @@ function labels(data) {
 }
 
 function renderScalar(view, data) {
+  setViewWide(false);
   const L = labels(data);
   const t = document.createElement("table");
   t.className = "scalar";
@@ -626,6 +882,7 @@ function renderScalar(view, data) {
 }
 
 function renderLine(view, data, ref) {
+  setViewWide(true);
   const L = labels(data);
   const div = document.createElement("div");
   view.appendChild(div);
@@ -635,7 +892,7 @@ function renderLine(view, data, ref) {
     ...PLOT_LAYOUT,
     height: PLOT_H,
     margin: { ...PLOT_LAYOUT.margin, t: 32 },
-    title: L.value,
+    title: data._fixed ? `${L.value} @ ${data._fixed}` : L.value,
     xaxis: { title: { text: L.index_1, standoff: 6 }, automargin: true },
     yaxis: { title: { text: L.value, standoff: 12 }, automargin: true, rangemode: isPower ? "tozero" : "normal" },
   }, { responsive: true });
@@ -664,6 +921,7 @@ async function loadMultiTable(cell, items, ylabel) {
 }
 
 function renderMultiLine(datas, names, ylabel) {
+  setViewWide(true);
   const view = document.getElementById("view");
   view.innerHTML = "";
   hideWave();
@@ -686,10 +944,10 @@ function renderMultiLine(datas, names, ylabel) {
 }
 
 function renderHeatmap(view, data, ref) {
+  setViewWide(true);
   const L = labels(data);
   const hover = `${L.index_1}=%{y}<br>${L.index_2}=%{x}<br>${L.value}=%{z}<extra></extra>`;
   const heat = document.createElement("div");
-  heat.style.width = "65%"; // leave room for the top-right floating cell symbol
   view.appendChild(heat);
   Plotly.newPlot(heat, [{
     z: data.values, x: data.index_2, y: data.index_1,
@@ -703,8 +961,71 @@ function renderHeatmap(view, data, ref) {
     yaxis: { title: L.index_1 },
   }, { responsive: true });
 
+  const controls = document.createElement("div");
+  controls.className = "plot-controls";
+
+  const modeControls = document.createElement("div");
+  modeControls.className = "plot-segment";
+  const waveControls = document.createElement("div");
+  waveControls.className = "plot-segment hidden";
+
+  const state = { mode: "surface", groupBy: "index_1" };
   const surf = document.createElement("div");
-  view.appendChild(surf);
+  view.append(controls, surf);
+
+  const renderLower = () => {
+    const isWaves = state.mode === "waves";
+    waveControls.classList.toggle("hidden", !isWaves);
+    setPlotControlActive(modeButtons, state.mode);
+    setPlotControlActive(groupButtons, state.groupBy);
+    if (isWaves) renderWaveFamilies(surf, data, L, state.groupBy);
+    else renderSurfacePlot(surf, data, L, hover);
+  };
+
+  const modeButtons = {
+    surface: plotControlButton("3D surface", () => {
+      state.mode = "surface";
+      renderLower();
+    }),
+    waves: plotControlButton("2D waves", () => {
+      state.mode = "waves";
+      renderLower();
+    }),
+  };
+  modeControls.append(modeButtons.surface, modeButtons.waves);
+
+  const groupButtons = {
+    index_1: plotControlButton(`Group by ${L.index_1}`, () => {
+      state.groupBy = "index_1";
+      renderLower();
+    }),
+    index_2: plotControlButton(`Group by ${L.index_2}`, () => {
+      state.groupBy = "index_2";
+      renderLower();
+    }),
+  };
+  waveControls.append(groupButtons.index_1, groupButtons.index_2);
+  controls.append(modeControls, waveControls);
+  renderLower();
+}
+
+function plotControlButton(text, onClick) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = text;
+  btn.onclick = onClick;
+  return btn;
+}
+
+function setPlotControlActive(buttons, activeKey) {
+  Object.entries(buttons).forEach(([key, btn]) => {
+    const active = key === activeKey;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+function renderSurfacePlot(surf, data, L, hover) {
   // z range spans the actual data (values can be negative, e.g. hold
   // constraints); anchor at 0 only when the data is one-sided.
   const flat = data.values.flat();
@@ -830,8 +1151,37 @@ function renderHeatmap(view, data, ref) {
   }, { responsive: true });
 }
 
+function renderWaveFamilies(plot, data, L, groupBy) {
+  const traces = groupBy === "index_2"
+    ? data.index_2.map((xv, j) => ({
+      x: data.index_1,
+      y: data.index_1.map((_, i) => data.values[i][j]),
+      name: `${L.index_2}=${fmtVal(xv)}`,
+      mode: "lines+markers",
+      type: "scatter",
+    }))
+    : data.index_1.map((yv, i) => ({
+      x: data.index_2,
+      y: data.values[i],
+      name: `${L.index_1}=${fmtVal(yv)}`,
+      mode: "lines+markers",
+      type: "scatter",
+    }));
+  const xTitle = groupBy === "index_2" ? L.index_1 : L.index_2;
+  const isPower = /power/.test(data.table || "");
+  Plotly.newPlot(plot, traces, {
+    ...PLOT_LAYOUT,
+    height: PLOT_H,
+    margin: { ...PLOT_LAYOUT.margin, t: 18 },
+    xaxis: { title: { text: xTitle, standoff: 6 }, automargin: true },
+    yaxis: { title: { text: L.value, standoff: 12 }, automargin: true, rangemode: isPower ? "tozero" : "normal" },
+    legend: { font: { size: 11 } },
+  }, { responsive: true });
+}
+
 // 3D table -> clickable (index_1 x index_2) grid; cell click -> wave over index_3.
 function renderGrid(view, data, ref) {
+  setViewWide(false);
   const L = labels(data);
   const note = document.createElement("h3");
   note.className = "section";

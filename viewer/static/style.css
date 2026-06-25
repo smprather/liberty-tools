@@ -16,7 +16,7 @@ body {
   color: var(--fg);
 }
 .muted { color: var(--muted); }
-.hidden { display: none; }
+.hidden { display: none !important; }
 
 #sidebar {
   width: 360px;
@@ -75,6 +75,7 @@ ul.tree { padding-left: 0; }
 .meta-inline { color: var(--muted); font-size: 11px; }
 
 #main { flex: 1; overflow: auto; padding: 8px 16px; position: relative; }
+#debugbar { margin-bottom: 0; }
 #devbar { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 #dump-debug {
   font: inherit;
@@ -101,25 +102,31 @@ ul.tree { padding-left: 0; }
 #dump-status { font-size: 11px; }
 #crumb { margin-bottom: 6px; }
 #view { min-height: 0; }
-table.scalar { border-collapse: collapse; }
+table.scalar { border-collapse: collapse; font: inherit; }
 table.scalar td, table.scalar th {
   border: 1px solid var(--border);
   padding: 3px 8px;
   text-align: right;
+  font: inherit;
+  font-weight: normal;
 }
-table.attrs { border-collapse: collapse; margin-top: 4px; }
+table.scalar th { background: #34405a; color: var(--fg); }
+table.attrs { border-collapse: collapse; margin-top: 4px; font: inherit; }
 table.attrs td, table.attrs th {
   border: 1px solid var(--border);
   padding: 3px 8px;
   text-align: left;
   vertical-align: top;
+  font: inherit;
+  font-weight: normal;
 }
-table.attrs th { color: var(--muted); font-weight: 600; font-size: 11px; }
-table.attrs tr:first-child th { background: #2f2f37; color: var(--fg); }
+table.attrs th { color: var(--muted); }
+table.attrs tr:first-child th { background: #34405a; color: var(--fg); }
 table.attrs td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.attrs td.k { color: #e6c07b; white-space: nowrap; }
-table.grid { border-collapse: collapse; margin-top: 6px; }
-table.grid th { color: var(--muted); padding: 2px 6px; font-weight: normal; font-size: 11px; }
+table.grid { border-collapse: collapse; margin-top: 6px; font: inherit; }
+table.grid th { color: var(--muted); padding: 3px 6px; font: inherit; font-weight: normal; }
+table.grid tr:first-child th { background: #34405a; color: var(--fg); }
 table.grid td { padding: 0; }
 table.grid button {
   width: 100%;
@@ -148,6 +155,33 @@ table.grid td.num { padding: 3px 6px; text-align: right; color: var(--fg); white
 .dw-btn:hover { background: #3a3a44; }
 .dw-btn.active { background: var(--accent); color: #11131a; }
 .dw-table-scroll { overflow-x: auto; max-width: 100%; margin-top: 4px; }
+.plot-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 2px;
+}
+.plot-segment {
+  display: flex;
+  flex-wrap: wrap;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #2b2b32;
+}
+.plot-segment button {
+  font: inherit;
+  color: var(--fg);
+  background: #2b2b32;
+  border: 0;
+  border-right: 1px solid var(--border);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.plot-segment button:last-child { border-right: 0; }
+.plot-segment button:hover { background: #3a3a44; }
+.plot-segment button.active { background: var(--accent); color: #11131a; }
 #wave-section { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
 #source-section { position: relative; margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
 #source-copy {
@@ -185,37 +219,107 @@ table.grid td.num { padding: 3px 6px; text-align: right; color: var(--fg); white
 #source .tok-num { color: #d19a66; }
 h3.section { margin: 2px 0; font-size: 12px; color: var(--muted); font-weight: 600; }
 
-/* Cell view: attribute table (left) + gate symbol (right), same row/height. */
-.cell-top { display: flex; gap: 16px; align-items: flex-start; }
-.cell-left { flex: 0 0 auto; }
-.cell-left table.pg { margin-top: 6px; }
-/* Top bar: devbar + breadcrumb. The cell symbol floats top-right over the
-   content (out of flow, click-through) so it never costs vertical space. */
-#topbar { margin-bottom: 6px; }
-#cell-symbol {
-  position: absolute;
-  top: 6px;
-  right: 12px;
-  z-index: 5;
-  pointer-events: none;
-  margin: 0;
+/* Main content grid: metadata/table view shares the top row with the symbol.
+   Plot views, wave plots, and source span every column below that top block. */
+#content-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 6px;
+  align-items: start;
 }
+#content-grid.has-cell-symbol {
+  grid-template-columns: minmax(0, 1fr) max-content;
+}
+#crumb {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  margin-bottom: 0;
+  overflow-wrap: anywhere;
+}
+#view {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+}
+#content-grid.wide-view #view {
+  grid-column: 1 / -1;
+}
+#symbol-column {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  display: none;
+  justify-self: end;
+  align-self: stretch;
+  width: max-content;
+}
+#content-grid.has-cell-symbol #symbol-column {
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+}
+#content-grid.has-cell-symbol.wide-view #symbol-column {
+  grid-row: 1;
+}
+#wave-section,
+#source-section {
+  grid-column: 1 / -1;
+}
+#cell-symbol {
+  width: calc(var(--cell-symbol-frame-w, 0px) + 12px);
+  min-height: calc(var(--cell-symbol-frame-h, 0px) + 12px);
+  height: auto;
+  position: relative;
+  display: flex;
+  align-self: stretch;
+  align-items: flex-start;
+  justify-content: flex-end;
+  margin: 0;
+  padding: 5px;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: zoom-in;
+}
+#cell-symbol:hover { border-color: var(--accent); }
 #cell-symbol:empty { display: none; }
 
+.cell-sym-frame {
+  position: relative;
+  flex: 0 0 auto;
+}
 .cell-sym {
   margin-left: auto;
   min-width: 0;
-  overflow: auto;
+  overflow: visible;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   justify-content: flex-start;
   gap: 0;
+  width: max-content;
+  transform-origin: top right;
 }
+.cell-sym-frame > .cell-sym { position: absolute; top: 0; right: 0; }
 .cell-sym .sym { width: fit-content; }
 /* Wrap long equations at minterm (` + `) boundaries only; max-width is pinned
    to the SVG width in JS so the text never widens the symbol display. */
-.cell-sym .sym-title { color: var(--fg); font-size: 12px; margin-bottom: 2px; white-space: normal; text-align: left; margin-left: auto; }
+.cell-sym .sym-title {
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.35;
+  max-height: 32px;
+  margin-bottom: 2px;
+  white-space: normal;
+  text-align: left;
+  margin-left: auto;
+  overflow: hidden;
+}
+.cell-sym .sym-title.eq { display: flex; align-items: baseline; }
+.cell-sym .sym-title.eq .sym-lhs { flex: 0 0 auto; min-width: 0; overflow: hidden; text-align: right; white-space: nowrap; }
+.cell-sym .sym-title.eq .sym-rhs { flex: 1 1 auto; min-width: 0; overflow: hidden; }
 .cell-sym .sym-title .mt { white-space: nowrap; }
 .cell-sym svg { display: block; font-size: 12px; }
 .cell-sym .gate { fill: #2b2b32; stroke: var(--fg); stroke-width: 1.6; }
@@ -226,3 +330,34 @@ h3.section { margin: 2px 0; font-size: 12px; color: var(--muted); font-weight: 6
 .cell-sym .lbl { fill: var(--fg); }
 .cell-sym .lbl.out { fill: var(--accent); }
 .cell-sym .hint { fill: var(--muted); }
+
+.symbol-zoom-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.68);
+  opacity: 0;
+  transition: opacity 1000ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.symbol-zoom-backdrop.open { opacity: 1; }
+.symbol-zoom-panel {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 41;
+  overflow: visible;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+  transform-origin: top left;
+  transition:
+    transform 1000ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 1000ms cubic-bezier(0.22, 1, 0.36, 1);
+  cursor: zoom-out;
+}
+.symbol-zoom-panel > .cell-sym {
+  position: static;
+  margin-left: 0;
+  transform-origin: top left;
+}

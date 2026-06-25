@@ -63,7 +63,10 @@
   }
 
   function layout(root, opt = {}) {
-    const dx0 = opt.dx ?? 92, dy = opt.dy ?? 38, gateW = opt.gateW ?? 44, pad = 8;
+    const dxMin = opt.dx ?? 0, dy = opt.dy ?? 38, gateW = opt.gateW ?? 44, pad = 8;
+    const bubbleR = opt.bubbleR ?? 4;
+    const inputStub = opt.inputStub ?? 32;
+    const termGapRows = opt.termGapRows ?? 0.35;
     const ratio = opt.minWidthRatio ?? 0; // gate width >= ratio * height (aspect cap)
     let row = 0;
     const nodes = [];
@@ -71,7 +74,11 @@
       const nd = ref.node;
       nd.depth = depth;
       if (nd.kind === "gate") {
-        nd.inputs.forEach((c) => place(c, depth + 1));
+        nd.inputs.forEach((c, i) => {
+          place(c, depth + 1);
+          const next = nd.inputs[i + 1];
+          if (next && c.node.kind === "gate" && next.node.kind === "gate") row += termGapRows;
+        });
         const ys = nd.inputs.map((c) => c.node.row);
         nd.row = (Math.min(...ys) + Math.max(...ys)) / 2;
       } else nd.row = row++;
@@ -79,23 +86,35 @@
     }
     place(root, 0);
     let maxDepth = 0;
-    nodes.forEach((r) => (maxDepth = Math.max(maxDepth, r.node.depth)));
+    nodes.forEach((r) => {
+      if (r.node.kind === "gate") maxDepth = Math.max(maxDepth, r.node.depth);
+    });
     nodes.forEach((r) => (r.node.y = 14 + r.node.row * dy));
 
-    // Per-gate geometry: body spans its input rows; floor the height so a
-    // single-row gate (buffer/inverter) doesn't render as a flat pancake, then
-    // widen to keep w >= ratio*h. Recenter on the gate row when floored.
+    // Per-gate geometry: body spans its input rows. Keep the outer input pins at
+    // least half an input-spacing away from the top/bottom edge, so inversion
+    // bubbles remain readable.
     const minGH = gateW * 0.82;
     let maxW = gateW;
+    let maxChildW = gateW;
     nodes.forEach((r) => {
       const nd = r.node;
       if (nd.kind !== "gate") return;
-      const ys = nd.inputs.map((c) => c.node.y).concat(nd.y);
-      nd.gtop = Math.min(...ys) - pad;
-      nd.gh = Math.max(...ys) + pad - nd.gtop;
+      const inputYs = nd.inputs.map((c) => c.node.y).sort((a, b) => a - b);
+      const ys = inputYs.concat(nd.y);
+      let minGap = 0;
+      for (let i = 1; i < inputYs.length; i++) {
+        const gap = inputYs[i] - inputYs[i - 1];
+        if (gap > 0) minGap = minGap ? Math.min(minGap, gap) : gap;
+      }
+      const edgePad = Math.max(pad, minGap ? minGap / 2 : pad);
+      nd.bubR = bubbleR;
+      nd.gtop = Math.min(...ys) - edgePad;
+      nd.gh = Math.max(...ys) + edgePad - nd.gtop;
       if (nd.gh < minGH) { nd.gh = minGH; nd.gtop = nd.y - minGH / 2; }
-      nd.gw = Math.max(gateW, nd.gh * ratio);
+      nd.gw = Math.max(gateW, nd.gh * ratio, nd.type === "and" ? nd.gh : 0);
       if (nd.gw > maxW) maxW = nd.gw;
+      if (nd.depth > 0 && nd.gw > maxChildW) maxChildW = nd.gw;
     });
 
     // Vertical extent from gate bodies + pins (gates can overhang their rows).
@@ -126,9 +145,19 @@
     nodes.forEach((r) => { if (r.node.kind === "in") maxName = Math.max(maxName, String(r.node.name).length); });
     const padX = Math.max(26, maxName * fontUser * 0.62 + 12);
 
-    const dx = Math.max(dx0, maxW + 36); // keep columns clear of the widest gate
-    nodes.forEach((r) => (r.node.x = padX + (maxDepth - r.node.depth) * dx));
-    return { root, nodes, W: padX + maxDepth * dx + maxW + 80, H, y0, gateW, dy, fontUser, dots: opt.dots ?? true };
+    const dx = Math.max(dxMin, maxChildW + 24); // keep adjacent gate bodies visibly separated
+    nodes.forEach((r) => {
+      const nd = r.node;
+      nd.x = nd.kind === "gate" ? padX + inputStub + (maxDepth - nd.depth) * dx : padX;
+    });
+    nodes.forEach((r) => {
+      const nd = r.node;
+      if (nd.kind !== "gate") return;
+      nd.inputs.forEach((c) => {
+        if (c.node.kind !== "gate") c.node.x = nd.x - inputStub;
+      });
+    });
+    return { root, nodes, W: padX + inputStub + maxDepth * dx + maxW + 80, H, y0, gateW, dy, fontUser, dots: opt.dots ?? true };
   }
 
   const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -144,9 +173,18 @@
       if (nd.kind !== "gate") continue;
       for (const c of nd.inputs) {
         const cy = c.node.y;
+        let startx = childOutX(c.node);
         let endx = nd.x;
-        if (c.inverted) { o.push(`<circle class="bub" cx="${nd.x - 4}" cy="${cy}" r="4"/>`); endx = nd.x - 8; }
-        o.push(wire(childOutX(c.node), cy, endx, cy));
+        if (c.inverted && c.node.kind === "gate") {
+          const br = c.node.bubR || 4;
+          o.push(`<circle class="bub" cx="${startx + br}" cy="${cy}" r="${br}"/>`);
+          startx += br * 2;
+        } else if (c.inverted) {
+          const br = nd.bubR || 4;
+          o.push(`<circle class="bub" cx="${nd.x - br}" cy="${cy}" r="${br}"/>`);
+          endx = nd.x - br * 2;
+        }
+        o.push(wire(startx, cy, endx, cy));
       }
     }
     for (const ref of nodes) {
@@ -159,14 +197,18 @@
         o.push(`<text class="lbl" x="${nd.x - 7}" y="${nd.y + 4}" text-anchor="end">${nd.val}</text>`);
       } else {
         o.push(gateGlyph(nd.type, nd.x, nd.gtop, nd.gw, nd.gh));
-        // Inverted input: dot on the bubble's outer (wire) edge, not the gate.
-        for (const c of nd.inputs) o.push(pin(c.inverted ? nd.x - 8 : nd.x, c.node.y));
-        if (nd !== L.root.node) o.push(pin(nd.x + nd.gw, nd.y)); // root output dot drawn at the stub
+        // Leaf inversion has no source gate, so it stays as an input bubble.
+        for (const c of nd.inputs) o.push(pin(c.inverted && c.node.kind !== "gate" ? nd.x - (nd.bubR || 4) * 2 : nd.x, c.node.y));
+        if (nd !== L.root.node) {
+          const outx = ref.inverted ? nd.x + nd.gw + (nd.bubR || 4) * 2 : nd.x + nd.gw;
+          o.push(pin(outx, nd.y));
+        }
       }
     }
     const r = L.root, ry = r.node.y, rx = childOutX(r.node);
     let ox = rx;
-    if (r.inverted) { o.push(`<circle class="bub" cx="${rx + 4}" cy="${ry}" r="4"/>`); ox = rx + 8; }
+    const br = r.node.bubR || 4;
+    if (r.inverted) { o.push(`<circle class="bub" cx="${rx + br}" cy="${ry}" r="${br}"/>`); ox = rx + br * 2; }
     o.push(pin(ox, ry)); // output dot on the bubble's outer edge when inverted
     o.push(wire(ox, ry, ox + 30, ry));
     o.push(`<text class="lbl out" x="${ox + 36}" y="${ry + 4}">${esc(outLabel || "Y")}</text>`);
@@ -180,8 +222,8 @@
     const r = h / 2, mid = T + h / 2, b = T + h;
     if (type === "buf") return `<path class="gate" d="M${L},${T} L${L + w},${mid} L${L},${b} Z"/>`;
     if (type === "and") { const m = L + w - r; return `<path class="gate" d="M${L},${T} L${m},${T} A${r},${r} 0 0 1 ${m},${b} L${L},${b} Z"/>`; }
-    const back = L + w * 0.22, tip = L + w, shoulder = L + w * 0.55;
-    const orPath = `M${L},${T} Q${back},${mid} ${L},${b} Q${shoulder},${b} ${tip},${mid} Q${shoulder},${T} ${L},${T} Z`;
+    const back = L + w * 0.22, straight = L + w / 3, tip = L + w, shoulder = L + w * 0.72;
+    const orPath = `M${L},${T} L${straight},${T} Q${shoulder},${T} ${tip},${mid} Q${shoulder},${b} ${straight},${b} L${L},${b} Q${back},${mid} ${L},${T} Z`;
     if (type === "xor") return `<path class="gate2" d="M${L - 6},${T} Q${back - 6},${mid} ${L - 6},${b}"/><path class="gate" d="${orPath}"/>`;
     return `<path class="gate" d="${orPath}"/>`;
   }

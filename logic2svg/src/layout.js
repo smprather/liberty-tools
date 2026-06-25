@@ -6,10 +6,13 @@
 // (so tall many-input gates don't render as thin slivers).
 
 export function layout(root, opt = {}) {
-  const dx0 = opt.dx ?? 92;
+  const dxMin = opt.dx ?? 0;
   const dy = opt.dy ?? 42;
   const gateW = opt.gateW ?? 46;
+  const bubbleR = opt.bubbleR ?? 4;
   const pad = 9;
+  const inputStub = opt.inputStub ?? 32;
+  const termGapRows = opt.termGapRows ?? 0.35;
   const ratio = opt.minWidthRatio ?? 0;
 
   let row = 0;
@@ -18,7 +21,11 @@ export function layout(root, opt = {}) {
     const nd = ref.node;
     nd.depth = depth;
     if (nd.kind === "gate") {
-      nd.inputs.forEach((c) => place(c, depth + 1));
+      nd.inputs.forEach((c, i) => {
+        place(c, depth + 1);
+        const next = nd.inputs[i + 1];
+        if (next && c.node.kind === "gate" && next.node.kind === "gate") row += termGapRows;
+      });
       const ys = nd.inputs.map((c) => c.node.row);
       nd.row = (Math.min(...ys) + Math.max(...ys)) / 2;
     } else {
@@ -29,9 +36,46 @@ export function layout(root, opt = {}) {
   place(root, 0);
 
   let maxDepth = 0;
-  nodes.forEach((r) => (maxDepth = Math.max(maxDepth, r.node.depth)));
+  nodes.forEach((r) => {
+    if (r.node.kind === "gate") maxDepth = Math.max(maxDepth, r.node.depth);
+  });
   nodes.forEach((r) => (r.node.y = 16 + r.node.row * dy));
-  const H = 16 + (row - 1) * dy + 16; // top + content span (not row count) + bottom
+
+  // Per-gate geometry: body spans its input rows. Keep the outer input pins at
+  // least half an input-spacing away from the top/bottom edge, so inversion
+  // bubbles remain readable.
+  let maxW = gateW;
+  let maxChildW = gateW;
+  nodes.forEach((r) => {
+    const nd = r.node;
+    if (nd.kind !== "gate") return;
+    const inputYs = nd.inputs.map((c) => c.node.y).sort((a, b) => a - b);
+    const ys = inputYs.concat(nd.y);
+    let minGap = 0;
+    for (let i = 1; i < inputYs.length; i++) {
+      const gap = inputYs[i] - inputYs[i - 1];
+      if (gap > 0) minGap = minGap ? Math.min(minGap, gap) : gap;
+    }
+    const edgePad = Math.max(pad, minGap ? minGap / 2 : pad);
+    nd.bubR = bubbleR;
+    nd.gtop = Math.min(...ys) - edgePad;
+    nd.gh = Math.max(...ys) + edgePad - nd.gtop;
+    nd.gw = Math.max(gateW, nd.gh * ratio, nd.type === "and" ? nd.gh : 0);
+    if (nd.gw > maxW) maxW = nd.gw;
+    if (nd.depth > 0 && nd.gw > maxChildW) maxChildW = nd.gw;
+  });
+
+  // Vertical extent from gate bodies + pins (gates can overhang their rows).
+  let yTop = 16, yBot = 16;
+  nodes.forEach((r) => {
+    const nd = r.node;
+    const t = nd.kind === "gate" ? nd.gtop : nd.y;
+    const b = nd.kind === "gate" ? nd.gtop + nd.gh : nd.y;
+    yTop = Math.min(yTop, t);
+    yBot = Math.max(yBot, b);
+  });
+  const y0 = yTop - pad;
+  const H = yBot + pad - y0;
 
   // Label font (~12px on screen). opt.fitHeight=[min,max] enlarges the user-unit
   // font when the SVG is down-scaled to a capped pixel height (clipped to the
@@ -47,21 +91,19 @@ export function layout(root, opt = {}) {
   nodes.forEach((r) => { if (r.node.kind === "in") maxName = Math.max(maxName, String(r.node.name).length); });
   const padX = Math.max(30, maxName * fontUser * 0.62 + 12);
 
-  // Per-gate geometry: body spans its input rows; widen to keep w >= ratio*h.
-  let maxW = gateW;
+  const dx = Math.max(dxMin, maxChildW + 24);
+  nodes.forEach((r) => {
+    const nd = r.node;
+    nd.x = nd.kind === "gate" ? padX + inputStub + (maxDepth - nd.depth) * dx : padX;
+  });
   nodes.forEach((r) => {
     const nd = r.node;
     if (nd.kind !== "gate") return;
-    const ys = nd.inputs.map((c) => c.node.y).concat(nd.y);
-    nd.gtop = Math.min(...ys) - pad;
-    nd.gh = Math.max(...ys) + pad - nd.gtop;
-    nd.gw = Math.max(gateW, nd.gh * ratio);
-    if (nd.gw > maxW) maxW = nd.gw;
+    nd.inputs.forEach((c) => {
+      if (c.node.kind !== "gate") c.node.x = nd.x - inputStub;
+    });
   });
 
-  const dx = Math.max(dx0, maxW + 40);
-  nodes.forEach((r) => (r.node.x = padX + (maxDepth - r.node.depth) * dx));
-
-  const W = padX + maxDepth * dx + maxW + 90;
-  return { root, nodes, W, H, gateW, fontUser, dots: opt.dots ?? true };
+  const W = padX + inputStub + maxDepth * dx + maxW + 90;
+  return { root, nodes, W, H, y0, gateW, fontUser, dots: opt.dots ?? true };
 }
