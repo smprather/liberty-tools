@@ -310,17 +310,20 @@ h3.section { margin: 2px 0; font-size: 12px; color: var(--muted); font-weight: 6
   color: var(--fg);
   font-size: 12px;
   line-height: 1.35;
-  max-height: 32px;
+  max-height: calc(2 * 1.35em);
   margin-bottom: 2px;
   white-space: normal;
   text-align: left;
   margin-left: auto;
   overflow: hidden;
+  overflow-wrap: anywhere;
 }
-.cell-sym .sym-title.eq { display: flex; align-items: baseline; }
-.cell-sym .sym-title.eq .sym-lhs { flex: 0 0 auto; min-width: 0; overflow: hidden; text-align: right; white-space: nowrap; }
-.cell-sym .sym-title.eq .sym-rhs { flex: 1 1 auto; min-width: 0; overflow: hidden; }
-.cell-sym .sym-title .mt { white-space: nowrap; }
+.cell-sym .sym-title.eq {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.cell-sym .sym-title .mt { overflow-wrap: anywhere; }
 .cell-sym svg { display: block; font-size: 12px; }
 .cell-sym .gate { fill: #2b2b32; stroke: var(--fg); stroke-width: 1.6; }
 .cell-sym .gate2 { fill: none; stroke: var(--fg); stroke-width: 1.6; }

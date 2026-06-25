@@ -307,7 +307,7 @@ const escHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").re
 // soft-wrap opportunity).
 function eqHtml(label, func) {
   const terms = String(func).split(" + ").map((m) => `<span class="mt">${escHtml(m)}</span>`);
-  return `<span class="sym-lhs">${escHtml(label)} =</span><span class="sym-rhs">&nbsp;${terms.join(" + ")}</span>`;
+  return `<span class="sym-lhs">${escHtml(label)} = </span>${terms.join(" + ")}`;
 }
 
 // Show the owning cell's symbol; cheap no-op if it's already displayed.
@@ -404,6 +404,7 @@ function renderCellSymbol(cellData) {
     if (title) {
       const svgW = Math.round((hPx * vbW) / vbH);
       const scale = hPx / vbH;
+      title.title = title.textContent;
       const inputLabels = [...s.querySelectorAll(".lbl:not(.out)")];
       let labelRight = 0;
       if (inputLabels.length) {
@@ -426,15 +427,12 @@ function renderCellSymbol(cellData) {
       }
       const labelRightPx = Math.max(0, Math.round((labelRight - vb[0]) * scale));
       title.style.marginLeft = "0";
-      const lhs = title.querySelector(".sym-lhs");
-      if (lhs) lhs.style.flexBasis = `${labelRightPx}px`;
       title.style.width = "";
       title.style.maxWidth = "";
       symMetrics.push({
         sym,
         svg: s,
         title,
-        lhs,
         svgW,
         labelRightPx,
       });
@@ -447,7 +445,6 @@ function renderCellSymbol(cellData) {
       const svgOffset = Math.max(0, labelCol - m.labelRightPx);
       const symW = m.svgW + svgOffset;
       m.svg.style.marginLeft = `${svgOffset}px`;
-      if (m.lhs) m.lhs.style.flexBasis = `${labelCol}px`;
       stackW = Math.max(stackW, symW);
     });
     stackW = Math.ceil(stackW);
