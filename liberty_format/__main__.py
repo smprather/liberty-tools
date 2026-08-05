@@ -1,7 +1,7 @@
-"""``liberty_format`` CLI — strict, functionally-transparent Liberty formatter.
+"""``liberty-format`` CLI — strict, functionally-transparent Liberty formatter.
 
-Run: ``uv run liberty_format FILE`` (or, after ``uv tool install .``,
-``liberty_format FILE``).
+Run: ``uv run liberty-format FILE`` (or, after ``uv tool install .``,
+``liberty-format FILE``).
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ def _read(path: Path) -> str:
 )
 @click.version_option(
     version=_package_version(),
-    prog_name="liberty_format",
+    prog_name="liberty-format",
     message="%(prog)s %(version)s",
 )
 def main(

@@ -68,8 +68,8 @@ crate fetch fail loudly.
 ## Run / test
 
 ```bash
-uv run liberty_view dev.lib          # browser viewer (Plotly served locally)
-uv run liberty_format dev.lib        # transparency-checked formatter
+uv run liberty-view dev.lib          # browser viewer (Plotly served locally)
+uv run liberty-format dev.lib        # transparency-checked formatter
 uv run pytest -q                     # tests
 uv run ruff check . && cargo fmt --check
 ```

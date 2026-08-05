@@ -57,7 +57,7 @@ async function api(path) {
 }
 
 // Snapshot of what the client is currently showing; dumped to a file by the
-// "Dump Debug" button (only present under `liberty_view --dev`).
+// "Dump Debug" button (only present under `liberty-view --dev`).
 const debugState = { meta: null, openCells: {}, lastTable: null };
 
 // Full breadcrumb of the selection, "/"-joined (lib / cell / pin / arc / table),

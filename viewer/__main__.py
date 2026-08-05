@@ -1,7 +1,7 @@
-"""``liberty_view`` CLI — serve the browser-based Liberty data viewer.
+"""``liberty-view`` CLI — serve the browser-based Liberty data viewer.
 
-Run: ``uv run liberty_view [LIBERTY_FILE] [--port N]`` (or, once installed with
-``uv tool install .``, just ``liberty_view``).
+Run: ``uv run liberty-view [LIBERTY_FILE] [--port N]`` (or, once installed with
+``uv tool install .``, just ``liberty-view``).
 """
 
 from __future__ import annotations
@@ -114,7 +114,7 @@ def _open_when_ready(url: str, timeout: float = 30.0) -> None:
 )
 @click.version_option(
     version=_package_version(),
-    prog_name="liberty_view",
+    prog_name="liberty-view",
     message="%(prog)s %(version)s",
 )
 def main(

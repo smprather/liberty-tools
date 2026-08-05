@@ -80,7 +80,7 @@ large-file smoke tests will run; otherwise they are skipped.
 Run the local browser viewer:
 
 ```bash
-uv run liberty_view dev.lib
+uv run liberty-view dev.lib
 ```
 
 The viewer serves all frontend assets locally, including Plotly. It renders:

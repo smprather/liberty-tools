@@ -1332,7 +1332,7 @@ fn parse_file_document(
 
 /// Encode the lexer's token stream as strings (`W<value>` for words, `S<char>`
 /// for symbols). Comments and whitespace are not tokens, so two files with
-/// equal token streams parse identically — the basis for `liberty_format`'s
+/// equal token streams parse identically — the basis for `liberty-format`'s
 /// functional-transparency guarantee.
 fn lex_all(reader: Box<dyn Read>) -> Result<Vec<String>, ParseError> {
     let mut lexer = Lexer::new(reader)?;
