@@ -20,29 +20,33 @@
   </div>
 
   <div id="main">
-    <div id="topbar">
+    <div id="debugbar">
       <div id="devbar" class="hidden">
         <button id="dump-debug" title="Write the current page state to liberty_view_debug.json">Dump Debug</button>
         <button id="dev-reload" title="Re-exec the server (pick up rebuilt code), then reload">Reload</button>
         <span id="dump-status" class="muted"></span>
       </div>
+    </div>
+    <div id="content-grid">
       <div id="crumb" class="muted">Select a table from the tree.</div>
-      <div id="cell-symbol"></div>
-    </div>
-    <div id="view"></div>
-    <div id="wave-section" class="hidden">
-      <div id="wave-title" class="muted"></div>
-      <div id="wave"></div>
-    </div>
-    <div id="source-section" class="hidden">
-      <button id="source-copy" title="Copy source" aria-label="Copy source">
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-        </svg>
-      </button>
-      <div id="source-title" class="muted"></div>
-      <pre id="source"></pre>
+      <div id="view"></div>
+      <div id="symbol-column">
+        <div id="cell-symbol"></div>
+      </div>
+      <div id="wave-section" class="hidden">
+        <div id="wave-title" class="muted"></div>
+        <div id="wave"></div>
+      </div>
+      <div id="source-section" class="hidden">
+        <button id="source-copy" title="Copy source" aria-label="Copy source">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+        </button>
+        <div id="source-title" class="muted"></div>
+        <pre id="source"></pre>
+      </div>
     </div>
   </div>
 
