@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
@@ -438,6 +439,7 @@ class LibraryIndex:
     def cell_source(self, name: str) -> str: ...
 
 
+@dataclass(frozen=True)
 class MinPulseWidth:
     high: float | None
     low: float | None

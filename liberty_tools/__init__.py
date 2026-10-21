@@ -356,7 +356,12 @@ class Cell:
 
     @property
     def cell_leakage_power(self) -> float | None:
-        """``cell_leakage_power`` in the library power unit (voltage × current)."""
+        """``cell_leakage_power`` in the library power unit.
+
+        The power unit is the one the library declares as
+        ``leakage_power_unit``; when the library declares no leakage unit it
+        is voltage × current.
+        """
         return self._native.cell_leakage_power
 
     @property

@@ -189,7 +189,7 @@ curl -s "http://127.0.0.1:8123/api/cells?filter=inv&limit=20"
 
 ```bash
 # 1. Look at a library before touching it.
-liberty-view library.lib --no-open-browser --port 8123
+liberty-view library.lib --no-open-browser --port 8123 &
 
 # 2. Check that a file is formatted before committing it.
 liberty-format --check library.lib

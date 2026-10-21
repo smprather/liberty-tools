@@ -45,6 +45,7 @@ This is a **maturin/PyO3 hybrid**: all parsing and data storage lives in Rust (`
 ```
 src/lib.rs                 Rust: lexer, parser, boolean evaluator, PyO3 #[pyclass] types
 liberty_tools/__init__.py  Python wrapper classes (LibertyDocument, Cell, Pin, …)
+liberty_tools/comparison.py  Python library comparison (arc matching, grid alignment)
 liberty_tools/__init__.pyi Type stubs
 tests/                     Pytest integration tests (inline fixture strings, no large files)
 ```
@@ -62,7 +63,7 @@ There are two parallel type hierarchies: `*Data` (plain Rust structs, no PyO3 ov
 
 ### Python layer (`liberty_tools/__init__.py`)
 
-Each class wraps the corresponding native object via `self._native`. `LibertyDocument.to_polars()` calls `timing_tables()` and hands the result to `polars.DataFrame`. `parse_file` is the sole public entry point.
+Each class wraps the corresponding native object via `self._native`. `LibertyDocument.to_polars()` calls `timing_tables()` and hands the result to `polars.DataFrame`. `parse_file` is the entry point for reading; `liberty_tools/comparison.py` holds the library comparison (`compare()` and its result types) and is re-exported from the package.
 
 ### Browser viewer (`viewer/`)
 
@@ -109,7 +110,13 @@ Logic-symbol rendering lessons learned:
 - **Flat table values are row-major with `index_1` slowest**: `values[i * len(index_2) + j]` for 2-D, `values[i * len(index_2) * len(index_3) + j * len(index_3) + k]` for 3-D. `table_position()` and `flat_index()` must stay consistent with this; `TimingTable::lookup`/`value_at` are the supported way to read a point.
 - **Axis order is per-table, not fixed**: which axis is the load and which is the transition comes from the table's `lu_table_template` and differs between libraries. `resolve_axis_vars` fills `TimingTableData::axis_vars` after the whole library body is parsed (templates may be declared after the cells that use them). `liberty_tools/comparison.py` aligns grids by that role — keep both sides in sync.
 - **The writer is surgical**: `Document::to_string`/`write` re-read the original source and rewrite only the attributes changed through `Cell::set_attribute`/`Pin::set_attribute`; everything else stays byte for byte. The parser therefore records byte spans (`cell_spans`) and a source hash. Never re-emit a document from the parsed model — the model is lossy (comments, unknown groups, formatting) and would silently drop data.
+- **Only the last edit of an attribute counts**: the edit log keeps every edit, but `apply_edits_to_source` walks it backwards and keeps the first occurrence of each `(cell, pin, container, key)` — the last edit made. Applying two edits to the same span would make the second land inside the first one's text.
+- **The writer patches the entity the caller addressed**: a cell edit lands in the cell group, a pin edit in that pin's group. A pin edit that names its container (`bus`/`bundle`) is patched inside that container; a pin edit without one is patched in the only pin group of that name, and `resolve_pin_group` refuses (`ValueError`) when the name matches more than one group — never patch an arbitrary one.
+- **Attribute values are written unquoted only when they match `^[A-Za-z0-9_+.\-]+$`**: every other value is written as a quoted string with `\` and `"` escaped (`render_attribute_value`), so the file parses back to exactly the value that was set. The rule is a safe pattern, not a blacklist of dangerous characters.
 - **Attribute edits need an owning document**: `set_attribute` on a cell/pin that is not attached to a document raises `RuntimeError` rather than accepting an edit that could never be written back.
+- **The compare module is `liberty_tools/comparison.py`**: the package re-exports it, so `lt.compare` is the *function* and `liberty_tools.comparison.Comparison` is the class. Keep the re-export (and the `.pyi` re-export) in place — the package attribute must stay the function.
+- **Compare reports what it cannot compare, it never guesses**: a table whose unit dimension (time, capacitive load, voltage) differs between the two libraries is reported in `Comparison.unit_mismatches` as a `UnitMismatch`; a table whose axis roles are known on both sides but do not correspond is reported in `Comparison.axis_role_mismatches` as an `AxisRoleMismatch` (matching positionally would compare different quantities); a table whose `values` length does not match its grid is reported in `Comparison.malformed_tables` as a `MalformedTable`. None of them is diffed or interpolated. `Comparison.has_differences` is true for any of those, and `summary()` counts every kind of difference.
+- **`value_at` raises `IndexError` for a negative position**: a negative `row`/`col`/`depth` is out of range like any other position, so it is reported as an `IndexError` and not as a conversion overflow. `lookup()` matches *axis values* (not grid positions) and returns `None` for a coordinate that is not an axis value; `value_at()` is the by-grid-index accessor.
 - **Minimum pulse width has two forms**: the `min_pulse_width_high`/`_low` pin attributes and a `min_pulse_width` timing arc with `rise_constraint`/`fall_constraint` tables. `pin.min_pulse_width()` normalizes both and reports which form it read in `MinPulseWidth.source`; the attribute form wins.
 
 ## Liberty spec reference

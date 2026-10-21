@@ -12,7 +12,7 @@ The current implementation focuses on standard-cell timing, power, and CCS data:
 - cell, pin, and timing arc lookup
 - bus, bundle, and Liberty `type(...)` bus definition lookup
 - 1D, 2D, and 3D timing table extraction to Python rows or Polars
-- lookup of a table value by grid coordinate, by index or by axis role
+- lookup of a table value by axis coordinate, by axis role or by grid index
 - `internal_power` extraction (switching energy in joules)
 - CCS data: `output_current_*` waves, CCSP dynamic current, and CCS-noise
   (CCSN) stage data (`dc_current`, `output_voltage_*`)
@@ -156,17 +156,20 @@ The long-form dataframes use the same convention: the `row` column indexes
 ### Looking Up A Value
 
 Use `lookup()` instead of re-deriving the flat index. Give the coordinate on
-each axis either by index or by the axis's physical variable:
+each axis either by the axis's value or by the axis's physical variable:
 
 ```python
 table.lookup(index_1=0.108, index_2=0.0966)   # -> float | None
 table.lookup(load=0.108, transition=0.0966)    # by axis role
-table.value_at(row=0, col=1)                   # by grid position
+table.value_at(row=0, col=1)                   # by grid index
 ```
 
-`lookup()` returns `None` when the point is not on the table's grid (it never
+`lookup()` matches **axis values**, not grid positions: it returns `None`
+when the coordinate given is not one of the table's axis values (it never
 clamps and never raises for an off-grid point). Every axis of the table needs
-a coordinate; a missing one raises `ValueError`.
+a coordinate; a missing one raises `ValueError`. `value_at()` is the
+by-grid-index accessor: it raises `IndexError` when the position is outside
+the table, a negative position included.
 
 ### Axis Roles
 
@@ -230,15 +233,20 @@ The timing dataframe uses long-form rows with columns such as:
 
 ## Scalar Attributes And Units
 
-Every group exposes its simple and complex attributes as `(name, value)`
-string pairs, and the same `get()` accessor on the document, the cell and the
-pin:
+The document, the cell and the pin expose their simple and complex
+attributes as `(name, value)` string pairs, and the same `get()` accessor
+works on all three:
 
 ```python
 doc.get("default_max_transition")     # -> str | None
 cell.get("cell_leakage_power")        # -> str | None
 pin.get("capacitance")                # -> str | None
 ```
+
+Buses and bundles have no attributes of their own — they carry a name, a
+direction, a function and their member pins. The bus *type* is the one
+exception: `bus_type.attributes()` returns a `dict[str, str]` rather than a
+list of pairs, and `bus_type.get(key)` looks a key up in it.
 
 Typed accessors return numbers instead, in the unit the library declares:
 
@@ -322,6 +330,23 @@ text = doc.to_string()     # the same text as a string
 `area` also updates `cell.area`. Writing refuses to touch a file whose
 source changed since it was parsed.
 
+The writer rules:
+
+- Only the **last edit of an attribute** counts: setting the same attribute
+  twice writes the value of the second call.
+- The writer patches **the cell or the pin the caller addressed**. A pin
+  name that matches more than one group of the cell, and that carries no
+  container information, makes the **write fail** (`ValueError`) instead of
+  patching an arbitrary one; reach the pin through its bus or bundle
+  (`doc.cell("c").bus("B").pin("P")`) to say which one you mean.
+- An attribute value is written **unquoted only when it matches
+  `^[A-Za-z0-9_+.\-]+$`**; every other value is written as a quoted string
+  with `\` and `"` escaped, so that the file parses back to exactly the
+  value that was set.
+- `set_attribute()` on a **pin** updates the typed pin fields immediately:
+  `direction`, `function`, `three_state` and `power_down_function` (and the
+  `*_expr()` accessors built on them) see the new value without a re-parse.
+
 ## Comparing Two Libraries
 
 `compare()` matches the timing arcs of two documents, aligns their grids by
@@ -345,11 +370,40 @@ The comparison API lives in the module `liberty_tools.comparison`; the package
 re-exports it, so `lt.compare` is the *function* and
 `liberty_tools.comparison.Comparison` is the class.
 
-Arcs are matched by pin, related pin and timing type; within such a group
-the `when` conditions are matched by logical equivalence, so `"A & B"` matches
-`"B & A"`. Tables are matched by name and their grids are aligned by axis
-role, so the load axis of one library is compared against the load axis of
-the other even when the two files store them in a different order.
+A table the comparison cannot compare *honestly* is reported, never diffed:
+
+```python
+diff.unit_mismatches       # tables whose unit dimension differs between the libraries
+diff.axis_role_mismatches  # tables whose axis roles are known on both sides but differ
+diff.malformed_tables      # tables whose values do not fill their grid
+diff.duplicate_arcs        # arcs whose identity is not unique
+diff.unmatched             # points that exist in only one of the two grids
+diff.has_differences       # True when the two libraries differ in any way
+```
+
+- A table whose **unit dimension differs** between the two libraries — a
+  time, a capacitive load or a voltage — is reported as a `UnitMismatch`,
+  not diffed: its numbers would measure the same quantity in different
+  units.
+- A table whose **axis roles are known on both sides but do not
+  correspond** is reported as an `AxisRoleMismatch`, not matched
+  positionally: matching by position would compare different quantities and
+  produce plausible, wrong deltas.
+- A table whose **`values` length does not match its grid** is reported as a
+  `MalformedTable`, not interpolated: its values cannot be lined up with the
+  points they belong to.
+
+Those three classes — `UnitMismatch`, `AxisRoleMismatch` and
+`MalformedTable` — live in `liberty_tools.comparison` and are re-exported
+from the package (`lt.UnitMismatch`, `lt.AxisRoleMismatch`,
+`lt.MalformedTable`).
+
+Arcs are matched by pin, related pin, timing type and timing sense; within
+such a group the `when` conditions are matched by logical equivalence, so
+`"A & B"` matches `"B & A"`. Tables are matched by name and their grids are
+aligned by axis role, so the load axis of one library is compared against the
+load axis of the other even when the two files store them in a different
+order.
 
 Points that exist in only one grid are reported with the missing side left as
 `None`. Tables whose grids have a different number of axes cannot be
@@ -400,7 +454,27 @@ for the requested cells.
 
 ```python
 lt.parse_file(path, cells=None) -> LibertyDocument
-lt.compare(a, b, cells=None, cell=None, interpolate=False) -> Comparison
+lt.compare(a, b, *, cells=None, cell=None, interpolate=False) -> Comparison
+
+lt.UnitMismatch        # a table not compared: the unit dimension differs
+lt.AxisRoleMismatch    # a table not compared: the axis roles do not correspond
+lt.MalformedTable      # a table not compared: its values do not fill its grid
+
+diff.entries
+diff.only_in_a
+diff.only_in_b
+diff.shape_mismatches
+diff.unit_mismatches
+diff.axis_role_mismatches
+diff.malformed_tables
+diff.duplicate_arcs
+diff.matched
+diff.mismatched
+diff.unmatched
+diff.has_differences
+diff.max_abs_delta()
+diff.summary()
+diff.to_polars()
 
 doc.library_name
 doc.cells()
