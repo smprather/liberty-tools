@@ -1023,6 +1023,41 @@ def test_a_nan_value_is_not_treated_as_data(tmp_path: Path):
     assert diff.max_abs_delta() == 0.0
 
 
+def test_the_tolerance_decides_whether_two_axis_values_are_the_same_point(
+    tmp_path: Path,
+):
+    # The load axis of the second library is off by 1e-11: inside the
+    # default tolerance, outside a tighter one.
+    slightly_off = OURS.replace(
+        'index_1 ("0.1, 0.2");', 'index_1 ("0.10000000001, 0.2");'
+    )
+    ours = lt.parse_file(_write(tmp_path, "ours.lib", OURS))
+    theirs = lt.parse_file(_write(tmp_path, "theirs.lib", slightly_off))
+
+    # The default tolerance is relative, so the two grids describe the same
+    # points and the tables are compared as they are.
+    diff = lt.compare(ours, theirs, cell="u1")
+
+    assert len(diff.entries) == 4
+    assert all(entry.matched for entry in diff.entries)
+    assert diff.unmatched == []
+    assert diff.max_abs_delta() == 0.0
+
+    # A tolerance below the difference separates the two grids: the load of
+    # 0.1 is not a point of the other library any more.
+    diff = lt.compare(ours, theirs, cell="u1", tolerance=1e-12)
+
+    by_point = {(entry.index_1, entry.index_2): entry for entry in diff.entries}
+    assert by_point[(0.1, 1.0)].value_b is None
+    assert by_point[(0.1, 1.0)].delta is None
+    assert by_point[(0.1, 1.0)].matched is False
+    # The load of 0.2 is the same point in both libraries.
+    assert by_point[(0.2, 1.0)].value_b == 30.0
+    assert by_point[(0.2, 1.0)].matched is True
+    # The point the second library has on its own is reported as well.
+    assert diff.unmatched
+
+
 def test_to_polars_of_an_empty_comparison_has_the_documented_columns(
     docs,
 ):

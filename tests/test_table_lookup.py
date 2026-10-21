@@ -129,6 +129,117 @@ def test_axis_roles_follow_the_table_not_the_template(doc):
     assert table.index_1_variable == "total_output_net_capacitance"
 
 
+def test_a_three_dimensional_table_is_looked_up_by_position_and_by_value(
+    tmp_path: Path,
+):
+    liberty = tmp_path / "three_d.lib"
+    liberty.write_text(
+        """
+library (three_d) {
+  lu_table_template (t3) {
+    variable_1 : input_net_transition;
+    variable_2 : total_output_net_capacitance;
+    variable_3 : time;
+  }
+  cell (u1) {
+    pin (z) {
+      direction : output;
+      timing () {
+        related_pin : "a";
+        cell_rise (t3) {
+          index_1 ("1, 2");
+          index_2 ("10, 20");
+          index_3 ("0, 1");
+          values ("1, 2, 3, 4, 5, 6, 7, 8");
+        }
+      }
+    }
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    doc = lt.parse_file(liberty)
+    table = doc.cell("u1").pin("z").timing_arcs()[0].table("cell_rise")
+
+    assert table.axis_roles() == [
+        "input_net_transition",
+        "total_output_net_capacitance",
+        "time",
+    ]
+
+    # index_3 varies fastest, then index_2, then index_1.
+    assert table.values == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+
+    # By grid position: row indexes index_1, col indexes index_2 and depth
+    # indexes index_3.
+    assert table.value_at(0, 0, 0) == 1.0
+    assert table.value_at(0, 0, 1) == 2.0
+    assert table.value_at(0, 1, 0) == 3.0
+    assert table.value_at(0, 1, 1) == 4.0
+    assert table.value_at(1, 0, 0) == 5.0
+    assert table.value_at(1, 1, 1) == 8.0
+
+    # By the value of each axis.
+    assert table.lookup(index_1=1.0, index_2=10.0, index_3=0.0) == 1.0
+    assert table.lookup(index_1=1.0, index_2=20.0, index_3=1.0) == 4.0
+    assert table.lookup(index_1=2.0, index_2=20.0, index_3=1.0) == 8.0
+
+    # By the role the template gives the axis.
+    assert table.lookup(
+        input_net_transition=1.0,
+        total_output_net_capacitance=10.0,
+        time=0.0,
+    ) == 1.0
+    assert table.lookup(transition=2.0, load=20.0, time=1.0) == 8.0
+
+    # A position outside the table is an error.
+    with pytest.raises(IndexError):
+        table.value_at(0, 0, 2)
+
+
+def test_a_template_declared_after_the_cell_that_uses_it_still_names_the_axes(
+    tmp_path: Path,
+):
+    liberty = tmp_path / "late_template.lib"
+    liberty.write_text(
+        """
+library (late_template) {
+  cell (u1) {
+    pin (z) {
+      direction : output;
+      timing () {
+        related_pin : "a";
+        cell_rise (delay_template) {
+          index_1 ("1, 2");
+          index_2 ("10, 20");
+          values ("1, 2, 3, 4");
+        }
+      }
+    }
+  }
+  lu_table_template (delay_template) {
+    variable_1 : input_net_transition;
+    variable_2 : total_output_net_capacitance;
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    doc = lt.parse_file(liberty)
+    table = doc.cell("u1").pin("z").timing_arcs()[0].table("cell_rise")
+
+    # The template is resolved once the whole library body has been parsed,
+    # so a template declared after the cell that uses it still names its
+    # axes.
+    assert table.axis_roles() == [
+        "input_net_transition",
+        "total_output_net_capacitance",
+    ]
+    assert table.lookup(transition=1.0, load=10.0) == 1.0
+    assert table.lookup(load=20.0, transition=2.0) == 4.0
+
+
 def test_lookup_by_axis_role(doc):
     table = _table(doc, "cell_rise")
 

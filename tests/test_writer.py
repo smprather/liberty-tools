@@ -216,6 +216,36 @@ def test_written_document_parses_back_with_the_new_values(liberty, tmp_path: Pat
     assert table.values == [3.0, 4.0]
 
 
+def test_two_cells_are_edited_in_one_write(liberty, tmp_path: Path):
+    # Two cells of the same document, edited in one write: the first value
+    # becomes longer than the original, the second one shorter. The writer
+    # patches the cells by their recorded byte spans, so the length change
+    # of the first cell must not move the span of the second one.
+    doc = lt.parse_file(liberty)
+    doc.cell("u1").set_attribute("area", "59.8752")
+    doc.cell("u2").set_attribute("area", "0.5")
+
+    written = doc.to_string()
+
+    # Both cells carry their new value ...
+    assert "    area : 59.8752;" in written
+    assert "    area : 0.5;" in written
+    assert "    area : 1.0;" not in written
+    assert "    area : 2.0;" not in written
+
+    # ... and the rest of the file is byte for byte the original.
+    expected = LIBRARY.replace("    area : 1.0;", "    area : 59.8752;").replace(
+        "    area : 2.0;", "    area : 0.5;"
+    )
+    assert written == expected
+
+    out = tmp_path / "out.lib"
+    doc.write(out)
+    reparsed = lt.parse_file(out)
+    assert reparsed.cell("u1").area == 59.8752
+    assert reparsed.cell("u2").area == 0.5
+
+
 def test_writing_to_a_gzipped_path(liberty, tmp_path: Path):
     doc = lt.parse_file(liberty)
     doc.cell("u1").set_attribute("area", "59.8752")
