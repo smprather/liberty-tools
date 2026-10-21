@@ -270,6 +270,75 @@ def test_setting_the_same_attribute_twice_keeps_the_last_value(liberty):
     assert "22222222" not in written
 
 
+@pytest.mark.parametrize(
+    "sequence,expected",
+    [
+        (["area", "dont_touch"], {"area": "111111", "dont_touch": "true", "keep_me": "7"}),
+        (
+            ["area", "dont_touch", "area"],
+            {"area": "222222", "dont_touch": "true", "keep_me": "7"},
+        ),
+        (
+            ["area", "dont_touch", "area", "keep_me"],
+            {"area": "222222", "dont_touch": "true", "keep_me": "8"},
+        ),
+        (
+            ["area", "dont_touch", "area", "dont_touch"],
+            {"area": "222222", "dont_touch": "true", "keep_me": "7"},
+        ),
+        (
+            ["area", "dont_touch", "area", "keep_me", "dont_touch"],
+            {"area": "222222", "dont_touch": "true", "keep_me": "8"},
+        ),
+        (
+            ["area", "dont_touch", "area", "dont_touch", "keep_me"],
+            {"area": "222222", "dont_touch": "true", "keep_me": "8"},
+        ),
+    ],
+)
+def test_the_last_edit_of_an_attribute_wins(sequence, expected, tmp_path: Path):
+    source = (
+        "library (dedup) {\n"
+        "  cell (u1) {\n"
+        "    area : 1.0;\n"
+        "    dont_touch : false;\n"
+        "    keep_me : 7;\n"
+        "  }\n"
+        "}\n"
+    )
+    path = tmp_path / "dedup.lib"
+    path.write_text(source, encoding="utf-8")
+
+    # The values used per key, in the order the sequence names them: "area"
+    # goes to "111111" and then to "222222", "dont_touch" to "true" and
+    # "keep_me" to "8".
+    values = {"area": "111111", "dont_touch": "true", "keep_me": "8"}
+    doc = lt.parse_file(path)
+    cell = doc.cell("u1")
+    seen_area = 0
+    for key in sequence:
+        if key == "area":
+            seen_area += 1
+            cell.set_attribute(key, "111111" if seen_area == 1 else "222222")
+        else:
+            cell.set_attribute(key, values[key])
+
+    written = doc.to_string()
+    out = tmp_path / "out.lib"
+    doc.write(out)
+
+    reparsed = lt.parse_file(out)
+    for key, value in expected.items():
+        assert reparsed.cell("u1").get(key) == value, key
+
+    # No attribute swallowed the text of the following attribute.
+    assert "keep_me : 7;" in written or "keep_me : 8;" in written
+    assert written.count("keep_me") == 1
+    # The written file re-parses without error (checked above) and the
+    # untouched attributes survived.
+    assert reparsed.cell("u1").get("dont_touch") == "true"
+
+
 def test_editing_a_detached_cell_is_refused(liberty):
     # A cell from a LibraryIndex has no document to write back to, so the
     # edit would be lost. Refuse it instead of losing it silently.

@@ -1036,18 +1036,19 @@ impl Document {
         // same span would make the second one land in the middle of the
         // first one's text. The surviving edits keep the order they were made
         // in, so the written file is deterministic.
-        let mut keys: Vec<(String, Option<String>, String)> = Vec::new();
         let mut chosen: Vec<&AttrEdit> = Vec::new();
-        let mut slots: HashMap<(String, Option<String>, String), usize> = HashMap::new();
-        for edit in edits.iter() {
-            let key = (edit.cell.clone(), edit.pin.clone(), edit.key.clone());
-            if let Some(slot) = slots.remove(&key) {
-                keys.remove(slot);
-                chosen.remove(slot);
+        {
+            // Walk the log backwards and keep the first occurrence of every
+            // key; that is the last edit of the attribute. Reversing afterwards
+            // puts the survivors back in the order the edits were made in.
+            let mut seen: HashSet<(String, Option<String>, String)> = HashSet::new();
+            for edit in edits.iter().rev() {
+                let key = (edit.cell.clone(), edit.pin.clone(), edit.key.clone());
+                if seen.insert(key) {
+                    chosen.push(edit);
+                }
             }
-            slots.insert(key.clone(), keys.len());
-            keys.push(key);
-            chosen.push(edit);
+            chosen.reverse();
         }
         let mut by_cell: HashMap<&str, Vec<&AttrEdit>> = HashMap::new();
         for edit in chosen {
