@@ -1,10 +1,69 @@
 use flate2::read::GzDecoder;
-use pyo3::exceptions::{PyKeyError, PyValueError};
+use flate2::write::GzEncoder;
+use pyo3::exceptions::{PyIndexError, PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyList, PyString};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufReader, Read, Write};
+use std::sync::{Arc, Mutex};
+
+/// Unit scales resolved from the library header and inherited by every cell
+/// and pin, so that scalar accessors can report values with their scale
+/// attached (and SI-converted variants where useful).
+#[derive(Clone, Copy, Default)]
+struct UnitContext {
+    /// Seconds per library time unit (`time_unit : "1ns"` -> 1e-9).
+    time: Option<f64>,
+    /// Farads per library capacitive-load unit
+    /// (`capacitive_load_unit (1, ff)` -> 1e-15).
+    capacitance: Option<f64>,
+    /// Watts per library power unit (voltage * current).
+    power: Option<f64>,
+}
+
+impl UnitContext {
+    fn from_library(
+        voltage: Option<&str>,
+        current: Option<&str>,
+        time: Option<&str>,
+        capacitance_multiplier: Option<f64>,
+        capacitance_unit: Option<&str>,
+        leakage_power: Option<&str>,
+    ) -> Self {
+        let voltage = voltage.and_then(unit_scale);
+        let current = current.and_then(unit_scale);
+        let time = time.and_then(unit_scale);
+        let capacitance = capacitance_unit
+            .and_then(unit_scale)
+            .map(|scale| scale * capacitance_multiplier.unwrap_or(1.0));
+        // Leakage power uses its own unit when the library declares one
+        // (`leakage_power_unit : "1pW"`); otherwise it is voltage * current.
+        let power = leakage_power
+            .and_then(unit_scale)
+            .or_else(|| match (voltage, current) {
+                (Some(v), Some(c)) => Some(v * c),
+                _ => None,
+            });
+        Self {
+            time,
+            capacitance,
+            power,
+        }
+    }
+}
+
+/// A pending attribute edit recorded by `Cell::set_attribute` /
+/// `Pin::set_attribute`. The writer replays these against the original
+/// source text.
+#[derive(Clone, Debug)]
+struct AttrEdit {
+    cell: String,
+    /// `None` for a cell-level attribute, `Some(pin)` for a pin attribute.
+    pin: Option<String>,
+    key: String,
+    value: String,
+}
 
 #[pyclass(from_py_object)]
 #[derive(Clone)]
@@ -26,11 +85,30 @@ struct Document {
     /// Ordered library-group simple/complex attributes (technology, delay_model,
     /// nom_*, default_*, thresholds, …) — everything that isn't a sub-group.
     attributes: Vec<(String, String)>,
+    /// `operating_conditions` groups: name -> simple/complex attributes.
+    operating_conditions: Vec<(String, Vec<(String, String)>)>,
+    /// First arg of `capacitive_load_unit (1, ff)` -> the "1" multiplier.
+    capacitive_load_multiplier: Option<f64>,
+    /// `leakage_power_unit` (e.g. "1pW"), the unit of leakage power values.
+    leakage_power_unit: Option<String>,
     /// `normalized_driver_waveform` tables: index_1 = input slew, index_2 =
     /// normalized voltage (0..1), values = time. `name` = driver_waveform_name.
     driver_waveforms: Vec<TimingTableData>,
     cells: Vec<CellData>,
     bus_types: Vec<BusTypeData>,
+    /// Path the document was parsed from (None for synthetic documents).
+    source_path: Option<String>,
+    /// Byte length of the source, used to detect a changed file before writing.
+    source_len: usize,
+    /// FNV-1a hash of the source bytes.
+    source_hash: u64,
+    /// Byte span of every parsed cell group: (name, start, end).
+    cell_spans: Vec<(String, usize, usize)>,
+    /// Pending attribute edits, shared with the `Cell`/`Pin` handles handed out
+    /// by `Document::cell` / `Cell::pin` so that mutations survive the copy.
+    edits: Arc<Mutex<Vec<AttrEdit>>>,
+    /// Unit scales resolved from the library header.
+    units: UnitContext,
 }
 
 #[pyclass(from_py_object)]
@@ -49,6 +127,10 @@ struct Cell {
     latch: Option<LatchData>,
     leakage_powers: Vec<LeakagePowerData>,
     pg_pins: Vec<PgPinData>,
+    /// Unit scales inherited from the library header.
+    units: UnitContext,
+    /// Edit log of the owning document (None for detached cells).
+    edits: Option<Arc<Mutex<Vec<AttrEdit>>>>,
 }
 
 #[pyclass(from_py_object)]
@@ -67,6 +149,12 @@ struct Pin {
     timing_arcs: Vec<TimingArcData>,
     internal_powers: Vec<InternalPowerData>,
     attributes: Vec<(String, String)>,
+    /// Unit scales inherited from the library header.
+    units: UnitContext,
+    /// Edit log of the owning document (None for detached pins).
+    edits: Option<Arc<Mutex<Vec<AttrEdit>>>>,
+    /// Name of the owning cell (needed to locate a pin in the source).
+    cell_name: Option<String>,
 }
 
 /// An `internal_power` group. Despite the Liberty name, the table values are
@@ -97,6 +185,10 @@ struct Bus {
     bus_type: Option<String>,
     pins: Vec<PinData>,
     timing_arcs: Vec<TimingArcData>,
+    /// Edit log of the owning document (None for detached buses).
+    edits: Option<Arc<Mutex<Vec<AttrEdit>>>>,
+    /// Name of the owning cell.
+    cell_name: Option<String>,
 }
 
 #[pyclass(from_py_object)]
@@ -112,6 +204,10 @@ struct Bundle {
     members: Vec<String>,
     pins: Vec<PinData>,
     timing_arcs: Vec<TimingArcData>,
+    /// Edit log of the owning document (None for detached bundles).
+    edits: Option<Arc<Mutex<Vec<AttrEdit>>>>,
+    /// Name of the owning cell.
+    cell_name: Option<String>,
 }
 
 #[pyclass(from_py_object)]
@@ -176,6 +272,13 @@ struct TimingTable {
     index_2: Vec<f64>,
     #[pyo3(get)]
     index_3: Vec<f64>,
+    /// The table values, **flat** and **row-major** over the axes:
+    /// `index_1` is the slowest axis, `index_3` the fastest.
+    ///
+    /// ```text
+    /// 2-D:  values[i * len(index_2) + j]
+    /// 3-D:  values[i * len(index_2) * len(index_3) + j * len(index_3) + k]
+    /// ```
     #[pyo3(get)]
     values: Vec<f64>,
     /// The lookup-table template named in the group header, e.g. `cell_rise
@@ -183,6 +286,10 @@ struct TimingTable {
     /// variable names via `Document::templates`.
     #[pyo3(get)]
     template: Option<String>,
+    /// Axis variable names resolved from the table's template:
+    /// [index_1 role, index_2 role, index_3 role]. `None` when the table has
+    /// no template or the template does not name that axis.
+    axis_vars: [Option<String>; 3],
     /// CCS only: the `reference_time` of a `vector` group.
     #[pyo3(get)]
     reference_time: Option<f64>,
@@ -204,6 +311,7 @@ struct CellData {
     latch: Option<LatchData>,
     leakage_powers: Vec<LeakagePowerData>,
     pg_pins: Vec<PgPinData>,
+    units: UnitContext,
 }
 
 /// A `pg_pin` group (power/ground rail): name + its simple attributes
@@ -440,6 +548,7 @@ struct PinData {
     timing_arcs: Vec<TimingArcData>,
     internal_powers: Vec<InternalPowerData>,
     attributes: Vec<(String, String)>,
+    units: UnitContext,
 }
 
 #[derive(Clone)]
@@ -511,6 +620,9 @@ struct TimingTableData {
     index_3: Vec<f64>,
     values: Vec<f64>,
     template: Option<String>,
+    /// Axis variable names resolved from the table's template:
+    /// [index_1 role, index_2 role, index_3 role].
+    axis_vars: [Option<String>; 3],
     reference_time: Option<f64>,
     vectors: Vec<TimingTableData>,
 }
@@ -529,6 +641,8 @@ impl From<CellData> for Cell {
             latch: value.latch,
             leakage_powers: value.leakage_powers,
             pg_pins: value.pg_pins,
+            units: value.units,
+            edits: None,
         }
     }
 }
@@ -544,6 +658,9 @@ impl From<PinData> for Pin {
             timing_arcs: value.timing_arcs,
             internal_powers: value.internal_powers,
             attributes: value.attributes,
+            units: value.units,
+            edits: None,
+            cell_name: None,
         }
     }
 }
@@ -568,6 +685,8 @@ impl From<BusData> for Bus {
             bus_type: value.bus_type,
             pins: value.pins,
             timing_arcs: value.timing_arcs,
+            edits: None,
+            cell_name: None,
         }
     }
 }
@@ -581,6 +700,8 @@ impl From<BundleData> for Bundle {
             members: value.members,
             pins: value.pins,
             timing_arcs: value.timing_arcs,
+            edits: None,
+            cell_name: None,
         }
     }
 }
@@ -636,6 +757,7 @@ impl From<TimingTableData> for TimingTable {
             index_3: value.index_3,
             values: value.values,
             template: value.template,
+            axis_vars: value.axis_vars,
             reference_time: value.reference_time,
             vectors: value.vectors,
         }
@@ -669,7 +791,12 @@ impl Document {
             .iter()
             .find(|cell| cell.name == name)
             .cloned()
-            .map(Cell::from)
+            .map(|data| {
+                let mut cell = Cell::from(data);
+                cell.edits = Some(self.edits.clone());
+                cell.apply_edits();
+                cell
+            })
             .ok_or_else(|| PyKeyError::new_err(format!("unknown cell {name:?}")))
     }
 
@@ -811,6 +938,169 @@ impl Document {
         self.attributes.clone()
     }
 
+    /// Value of a library-level simple/complex attribute, or None if absent.
+    fn get(&self, key: &str) -> Option<String> {
+        attribute_value(&self.attributes, key)
+    }
+
+    /// `operating_conditions` groups: (name, attributes).
+    fn operating_conditions(&self) -> Vec<(String, Vec<(String, String)>)> {
+        self.operating_conditions.clone()
+    }
+
+    /// The attributes of one `operating_conditions` group.
+    fn operating_condition(&self, name: &str) -> PyResult<Vec<(String, String)>> {
+        self.operating_conditions
+            .iter()
+            .find(|(group, _)| group == name)
+            .map(|(_, attributes)| attributes.clone())
+            .ok_or_else(|| PyKeyError::new_err(format!("unknown operating condition {name:?}")))
+    }
+
+    /// The multiplier of `capacitive_load_unit (1, ff)` — the "1" in the
+    /// example. Together with `capacitive_load_unit` it gives the farad
+    /// scale of every capacitance value in the library.
+    #[getter]
+    fn capacitive_load_multiplier(&self) -> Option<f64> {
+        self.capacitive_load_multiplier
+    }
+
+    /// `leakage_power_unit` (e.g. "1pW") — the unit of the leakage power
+    /// values in the library.
+    #[getter]
+    fn leakage_power_unit(&self) -> Option<String> {
+        self.leakage_power_unit.clone()
+    }
+
+    /// `default_max_transition` of the library group, in the library time unit.
+    #[getter]
+    fn default_max_transition(&self) -> Option<f64> {
+        self.get("default_max_transition")
+            .as_deref()
+            .and_then(parse_first_number)
+    }
+
+    /// `default_fanout_load` of the library group (dimensionless).
+    #[getter]
+    fn default_fanout_load(&self) -> Option<f64> {
+        self.get("default_fanout_load")
+            .as_deref()
+            .and_then(parse_first_number)
+    }
+
+    /// `nom_voltage` of the library, in the library voltage unit. Read from
+    /// the library group when it declares one there, otherwise from the
+    /// default operating condition (as `voltage`).
+    #[getter]
+    fn nom_voltage(&self) -> Option<f64> {
+        self.get("nom_voltage")
+            .or_else(|| {
+                self.default_operating_condition().and_then(|attributes| {
+                    attribute_value(attributes, "nom_voltage")
+                        .or_else(|| attribute_value(attributes, "voltage"))
+                })
+            })
+            .as_deref()
+            .and_then(parse_first_number)
+    }
+
+    /// `nom_temperature` of the library. Read from the library group when it
+    /// declares one there, otherwise from the default operating condition (as
+    /// `temperature`).
+    #[getter]
+    fn nom_temperature(&self) -> Option<f64> {
+        self.get("nom_temperature")
+            .or_else(|| {
+                self.default_operating_condition().and_then(|attributes| {
+                    attribute_value(attributes, "nom_temperature")
+                        .or_else(|| attribute_value(attributes, "temperature"))
+                })
+            })
+            .as_deref()
+            .and_then(parse_first_number)
+    }
+
+    /// The Liberty source text of this document with every pending attribute
+    /// edit applied. Unmodified regions are preserved byte for byte.
+    #[pyo3(name = "to_string")]
+    fn liberty_to_string(&self) -> PyResult<String> {
+        let source = self.read_source_text()?;
+        let edits = self
+            .edits
+            .lock()
+            .map_err(|_| PyValueError::new_err("document edit log is poisoned"))?;
+        if edits.is_empty() {
+            return Ok(source);
+        }
+        // Only the last edit of an attribute counts: applying two edits to the
+        // same span would make the second one land in the middle of the
+        // first one's text. The surviving edits keep the order they were made
+        // in, so the written file is deterministic.
+        let mut keys: Vec<(String, Option<String>, String)> = Vec::new();
+        let mut chosen: Vec<&AttrEdit> = Vec::new();
+        let mut slots: HashMap<(String, Option<String>, String), usize> = HashMap::new();
+        for edit in edits.iter() {
+            let key = (edit.cell.clone(), edit.pin.clone(), edit.key.clone());
+            if let Some(slot) = slots.remove(&key) {
+                keys.remove(slot);
+                chosen.remove(slot);
+            }
+            slots.insert(key.clone(), keys.len());
+            keys.push(key);
+            chosen.push(edit);
+        }
+        let mut by_cell: HashMap<&str, Vec<&AttrEdit>> = HashMap::new();
+        for edit in chosen {
+            by_cell.entry(edit.cell.as_str()).or_default().push(edit);
+        }
+        // Every edited cell must have a span in the source, otherwise the
+        // edit would be dropped without a trace.
+        for cell_name in by_cell.keys() {
+            if !self.cell_spans.iter().any(|(name, _, _)| name == cell_name) {
+                return Err(PyValueError::new_err(format!(
+                    "cell {cell_name:?} is not in the source text; its edits cannot be \\
+                     written back"
+                )));
+            }
+        }
+        // Patch from the last cell backwards so earlier offsets stay valid.
+        let mut spans: Vec<&(String, usize, usize)> = self
+            .cell_spans
+            .iter()
+            .filter(|(name, _, _)| by_cell.contains_key(name.as_str()))
+            .collect();
+        spans.sort_by_key(|(_, start, _)| std::cmp::Reverse(*start));
+        let mut text = source;
+        for (name, start, end) in spans {
+            let cell_text = text.get(*start..*end).ok_or_else(|| {
+                PyValueError::new_err(format!("cell {name:?} is outside the source text"))
+            })?;
+            let patched = patch_cell_text(cell_text, name, &by_cell[name.as_str()])?;
+            text.replace_range(*start..*end, &patched);
+        }
+        Ok(text)
+    }
+
+    /// Write the document (with pending edits applied) to `path`. A path ending
+    /// in `.gz` is written gzip-compressed.
+    fn write(&self, path: &str) -> PyResult<()> {
+        let text = self.liberty_to_string()?;
+        let bytes = text.as_bytes();
+        if path.ends_with(".gz") {
+            let file = File::create(path).map_err(|err| PyValueError::new_err(err.to_string()))?;
+            let mut encoder = GzEncoder::new(file, flate2::Compression::default());
+            encoder
+                .write_all(bytes)
+                .map_err(|err| PyValueError::new_err(err.to_string()))?;
+            encoder
+                .finish()
+                .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        } else {
+            std::fs::write(path, bytes).map_err(|err| PyValueError::new_err(err.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// `normalized_driver_waveform` tables (index_1 = slew, index_2 = normalized
     /// voltage, values = time). `name` holds the driver_waveform_name.
     fn driver_waveforms(&self) -> Vec<TimingTable> {
@@ -877,7 +1167,13 @@ impl Cell {
             .iter()
             .find(|pin| pin.name == name)
             .cloned()
-            .map(Pin::from)
+            .map(|data| {
+                let mut pin = Pin::from(data);
+                pin.edits = self.edits.clone();
+                pin.cell_name = Some(self.name.clone());
+                pin.apply_edits();
+                pin
+            })
             .ok_or_else(|| PyKeyError::new_err(format!("unknown pin {name:?}")))
     }
 
@@ -890,7 +1186,12 @@ impl Cell {
             .iter()
             .find(|bus| bus.name == name)
             .cloned()
-            .map(Bus::from)
+            .map(|data| {
+                let mut bus = Bus::from(data);
+                bus.edits = self.edits.clone();
+                bus.cell_name = Some(self.name.clone());
+                bus
+            })
             .ok_or_else(|| PyKeyError::new_err(format!("unknown bus {name:?}")))
     }
 
@@ -906,13 +1207,70 @@ impl Cell {
             .iter()
             .find(|bundle| bundle.name == name)
             .cloned()
-            .map(Bundle::from)
+            .map(|data| {
+                let mut bundle = Bundle::from(data);
+                bundle.edits = self.edits.clone();
+                bundle.cell_name = Some(self.name.clone());
+                bundle
+            })
             .ok_or_else(|| PyKeyError::new_err(format!("unknown bundle {name:?}")))
     }
 
     /// Ordered `(name, value)` simple/complex attributes of the cell group.
     fn attributes(&self) -> Vec<(String, String)> {
         self.attributes.clone()
+    }
+
+    /// Value of a cell attribute, or None if absent.
+    fn get(&self, key: &str) -> Option<String> {
+        attribute_value(&self.attributes, key)
+    }
+
+    /// Set (or add) a cell attribute. The change is recorded on the owning
+    /// document and applied by `Document.write` / `Document.to_string`.
+    fn set_attribute(&mut self, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let text = attribute_value_text(value)?;
+        self.set_attribute_text(key, &text)
+    }
+
+    /// Set the cell `area` (the physical cell area, in library area units).
+    fn set_area(&mut self, value: f64) -> PyResult<()> {
+        self.set_attribute_text("area", &format!("{value}"))
+    }
+
+    /// `cell_leakage_power` in the library's power unit — the one declared by
+    /// `leakage_power_unit`, or voltage × current when the library does not
+    /// declare one.
+    #[getter]
+    fn cell_leakage_power(&self) -> Option<f64> {
+        self.get("cell_leakage_power")
+            .as_deref()
+            .and_then(parse_first_number)
+    }
+
+    /// `cell_leakage_power` in watts.
+    #[getter]
+    fn cell_leakage_power_watts(&self) -> Option<f64> {
+        let value = self.cell_leakage_power()?;
+        Some(value * self.units.power?)
+    }
+
+    /// `cell_footprint` (the cell's footprint name), if the library declares one.
+    #[getter]
+    fn cell_footprint(&self) -> Option<String> {
+        self.get("cell_footprint")
+    }
+
+    /// `dont_touch` (as written in the file, e.g. "true" / "false").
+    #[getter]
+    fn dont_touch(&self) -> Option<String> {
+        self.get("dont_touch")
+    }
+
+    /// `dont_use` (as written in the file, e.g. "true" / "false").
+    #[getter]
+    fn dont_use(&self) -> Option<String> {
+        self.get("dont_use")
     }
 
     /// CCS power (`dynamic_current`) groups.
@@ -1096,6 +1454,112 @@ impl Pin {
         self.attributes.clone()
     }
 
+    /// Value of a pin attribute, or None if absent.
+    fn get(&self, key: &str) -> Option<String> {
+        attribute_value(&self.attributes, key)
+    }
+
+    /// Set (or add) a pin attribute. The change is recorded on the owning
+    /// document and applied by `Document.write` / `Document.to_string`.
+    fn set_attribute(&mut self, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let text = attribute_value_text(value)?;
+        self.set_attribute_text(key, &text)
+    }
+
+    /// `capacitance` in the library capacitive-load unit.
+    #[getter]
+    fn capacitance(&self) -> Option<f64> {
+        self.get("capacitance")
+            .as_deref()
+            .and_then(parse_first_number)
+    }
+
+    /// `capacitance` in farads.
+    #[getter]
+    fn capacitance_farads(&self) -> Option<f64> {
+        let value = self.capacitance()?;
+        Some(value * self.units.capacitance?)
+    }
+
+    /// `rise_capacitance` in the library capacitive-load unit.
+    #[getter]
+    fn rise_capacitance(&self) -> Option<f64> {
+        self.get("rise_capacitance")
+            .as_deref()
+            .and_then(parse_first_number)
+    }
+
+    /// `rise_capacitance` in farads.
+    #[getter]
+    fn rise_capacitance_farads(&self) -> Option<f64> {
+        let value = self.rise_capacitance()?;
+        Some(value * self.units.capacitance?)
+    }
+
+    /// `fall_capacitance` in the library capacitive-load unit.
+    #[getter]
+    fn fall_capacitance(&self) -> Option<f64> {
+        self.get("fall_capacitance")
+            .as_deref()
+            .and_then(parse_first_number)
+    }
+
+    /// `fall_capacitance` in farads.
+    #[getter]
+    fn fall_capacitance_farads(&self) -> Option<f64> {
+        let value = self.fall_capacitance()?;
+        Some(value * self.units.capacitance?)
+    }
+
+    /// `max_transition` in the library time unit.
+    #[getter]
+    fn max_transition(&self) -> Option<f64> {
+        self.get("max_transition")
+            .as_deref()
+            .and_then(parse_first_number)
+    }
+
+    /// `max_transition` in seconds.
+    #[getter]
+    fn max_transition_seconds(&self) -> Option<f64> {
+        let value = self.max_transition()?;
+        Some(value * self.units.time?)
+    }
+
+    /// `min_pulse_width_high` in the library time unit (the pin-attribute
+    /// form of the minimum clock pulse width).
+    #[getter]
+    fn min_pulse_width_high(&self) -> Option<f64> {
+        self.get("min_pulse_width_high")
+            .or_else(|| self.get("min_capulse_width_high"))
+            .as_deref()
+            .and_then(parse_first_number)
+    }
+
+    /// `min_pulse_width_high` in seconds.
+    #[getter]
+    fn min_pulse_width_high_seconds(&self) -> Option<f64> {
+        let value = self.min_pulse_width_high()?;
+        Some(value * self.units.time?)
+    }
+
+    /// `min_pulse_width_low` in the library time unit (the pin-attribute form
+    /// of the minimum clock pulse width).
+    #[getter]
+    fn min_pulse_width_low(&self) -> Option<f64> {
+        self.get("min_pulse_width_low")
+            .or_else(|| self.get("min_capulse_width_low"))
+            .as_deref()
+            .and_then(parse_first_number)
+    }
+
+    /// `min_pulse_width_low` in seconds.
+    #[getter]
+    fn min_pulse_width_low_seconds(&self) -> Option<f64> {
+        let value = self.min_pulse_width_low()?;
+        Some(value * self.units.time?)
+    }
+
     /// The pin `function` as a parsed `BooleanExpression` (None if absent).
     fn function_expr(&self) -> PyResult<Option<BooleanExpression>> {
         expr_of(&self.function)
@@ -1144,7 +1608,13 @@ impl Bus {
             .iter()
             .find(|pin| pin.name == name)
             .cloned()
-            .map(Pin::from)
+            .map(|data| {
+                let mut pin = Pin::from(data);
+                pin.edits = self.edits.clone();
+                pin.cell_name = self.cell_name.clone();
+                pin.apply_edits();
+                pin
+            })
             .ok_or_else(|| PyKeyError::new_err(format!("unknown bus pin {name:?}")))
     }
 
@@ -1175,7 +1645,13 @@ impl Bundle {
             .iter()
             .find(|pin| pin.name == name)
             .cloned()
-            .map(Pin::from)
+            .map(|data| {
+                let mut pin = Pin::from(data);
+                pin.edits = self.edits.clone();
+                pin.cell_name = self.cell_name.clone();
+                pin.apply_edits();
+                pin
+            })
             .ok_or_else(|| PyKeyError::new_err(format!("unknown bundle pin {name:?}")))
     }
 
@@ -1281,6 +1757,196 @@ impl TimingTable {
             .collect()
     }
 
+    /// Number of axes the table has (1, 2 or 3).
+    fn axis_count(&self) -> usize {
+        if self.index_1.is_empty() {
+            0
+        } else if self.index_2.is_empty() {
+            1
+        } else if self.index_3.is_empty() {
+            2
+        } else {
+            3
+        }
+    }
+
+    /// The physical variable of each axis, in index order
+    /// (`[index_1 role, index_2 role, index_3 role]`), truncated to the axes
+    /// the table actually has. Entries are None when the table has no
+    /// template or the template does not name that axis.
+    fn axis_roles(&self) -> Vec<Option<String>> {
+        self.axis_vars[..self.axis_count()].to_vec()
+    }
+
+    /// The variable of one axis: 1 = `index_1`, 2 = `index_2`, 3 = `index_3`.
+    fn axis_role(&self, axis: usize) -> Option<String> {
+        match axis {
+            1 => self.axis_vars[0].clone(),
+            2 => self.axis_vars[1].clone(),
+            3 => self.axis_vars[2].clone(),
+            _ => None,
+        }
+    }
+
+    /// The variable of the `index_1` axis (e.g. "input_net_transition").
+    #[getter]
+    fn index_1_variable(&self) -> Option<String> {
+        self.axis_vars[0].clone()
+    }
+
+    /// The variable of the `index_2` axis (e.g. "total_output_net_capacitance").
+    #[getter]
+    fn index_2_variable(&self) -> Option<String> {
+        self.axis_vars[1].clone()
+    }
+
+    /// The variable of the `index_3` axis.
+    #[getter]
+    fn index_3_variable(&self) -> Option<String> {
+        self.axis_vars[2].clone()
+    }
+
+    /// The value at a grid point.
+    ///
+    /// Give the position on each axis either by index (`index_1=`, `index_2=`,
+    /// `index_3=`) or by the axis's physical variable (`load=`,
+    /// `transition=`, or the template's variable name). Returns None when the
+    /// point is not on the table's grid.
+    #[pyo3(signature = (index_1=None, index_2=None, index_3=None, **roles))]
+    fn lookup(
+        &self,
+        index_1: Option<f64>,
+        index_2: Option<f64>,
+        index_3: Option<f64>,
+        roles: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Option<f64>> {
+        let mut coords: [Option<f64>; 3] = [index_1, index_2, index_3];
+        if let Some(roles) = roles {
+            for (key, value) in roles.iter() {
+                let keyword: String = key.extract()?;
+                let coordinate: f64 = value.extract()?;
+                let axis = self
+                    .axis_roles()
+                    .iter()
+                    .position(|role| {
+                        role.as_deref()
+                            .map(|role| role_matches_role(role, &keyword))
+                            .unwrap_or(false)
+                    })
+                    .ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "table has no axis named {keyword:?}; its axes are {:?}",
+                            self.axis_roles()
+                        ))
+                    })?;
+                if coords[axis].is_some() {
+                    return Err(PyValueError::new_err(format!(
+                        "axis {} was given twice",
+                        axis + 1
+                    )));
+                }
+                coords[axis] = Some(coordinate);
+            }
+        }
+        let axes = self.axis_count();
+        if axes == 0 {
+            // The table has no grid (a CCS wave container, for instance), so
+            // no point can be on it.
+            return Ok(None);
+        }
+        for axis in 0..axes {
+            if coords[axis].is_none() {
+                return Err(PyValueError::new_err(format!(
+                    "axis {} ({}) needs a coordinate",
+                    axis + 1,
+                    self.axis_vars[axis]
+                        .clone()
+                        .unwrap_or_else(|| "unnamed".to_string())
+                )));
+            }
+        }
+        for axis in axes..3 {
+            if coords[axis].is_some() {
+                return Err(PyValueError::new_err(format!(
+                    "axis {} was given but the table only has {axes} axes",
+                    axis + 1
+                )));
+            }
+        }
+        let index_1 = match find_axis_position(&self.index_1, coords[0].unwrap()) {
+            Some(position) => position,
+            None => return Ok(None),
+        };
+        let index_2 = if axes >= 2 {
+            match find_axis_position(&self.index_2, coords[1].unwrap()) {
+                Some(position) => position,
+                None => return Ok(None),
+            }
+        } else {
+            0
+        };
+        let index_3 = if axes >= 3 {
+            match find_axis_position(&self.index_3, coords[2].unwrap()) {
+                Some(position) => position,
+                None => return Ok(None),
+            }
+        } else {
+            0
+        };
+        let flat = flat_index(
+            index_1,
+            index_2,
+            index_3,
+            self.index_2.len(),
+            self.index_3.len(),
+        );
+        Ok(self.values.get(flat).copied())
+    }
+
+    /// The value at a grid position: `row` indexes `index_1`, `col` indexes
+    /// `index_2`, `depth` indexes `index_3`.
+    #[pyo3(signature = (row, col, depth=None))]
+    fn value_at(&self, row: usize, col: usize, depth: Option<usize>) -> PyResult<f64> {
+        if !self.index_1.is_empty() && row >= self.index_1.len() {
+            return Err(PyIndexError::new_err(format!(
+                "row {row} is out of range (the table has {} rows)",
+                self.index_1.len()
+            )));
+        }
+        if self.index_2.is_empty() {
+            if col != 0 {
+                return Err(PyIndexError::new_err(
+                    "the table has one axis; col must be 0",
+                ));
+            }
+        } else if col >= self.index_2.len() {
+            return Err(PyIndexError::new_err(format!(
+                "col {col} is out of range (the table has {} columns)",
+                self.index_2.len()
+            )));
+        }
+        let depth = depth.unwrap_or(0);
+        if self.index_3.is_empty() {
+            if depth != 0 {
+                return Err(PyIndexError::new_err(
+                    "the table has no third axis; depth must be 0",
+                ));
+            }
+        } else if depth >= self.index_3.len() {
+            return Err(PyIndexError::new_err(format!(
+                "depth {depth} is out of range (the table has {} levels)",
+                self.index_3.len()
+            )));
+        }
+        let flat = flat_index(row, col, depth, self.index_2.len(), self.index_3.len());
+        self.values.get(flat).copied().ok_or_else(|| {
+            PyIndexError::new_err(format!(
+                "position ({row}, {col}, {depth}) is outside the table's {} values",
+                self.values.len()
+            ))
+        })
+    }
+
     fn rows<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let rows = PyList::empty(py);
         append_table_rows(
@@ -1304,6 +1970,7 @@ impl TimingTable {
                 index_3: self.index_3.clone(),
                 values: self.values.clone(),
                 template: self.template.clone(),
+                axis_vars: self.axis_vars.clone(),
                 reference_time: self.reference_time,
                 vectors: Vec::new(),
             },
@@ -1327,7 +1994,9 @@ fn parse_file_document(
 ) -> Result<Document, ParseLoadError> {
     let reader = open_input(path).map_err(ParseLoadError::Io)?;
     let mut parser = Parser::new(reader, filter).map_err(ParseLoadError::Parse)?;
-    parser.parse_document().map_err(ParseLoadError::Parse)
+    let mut document = parser.parse_document().map_err(ParseLoadError::Parse)?;
+    document.source_path = Some(path.to_string());
+    Ok(document)
 }
 
 /// Encode the lexer's token stream as strings (`W<value>` for words, `S<char>`
@@ -1344,6 +2013,16 @@ fn lex_all(reader: Box<dyn Read>) -> Result<Vec<String>, ParseError> {
         }
     }
     Ok(out)
+}
+
+/// Does an axis variable name answer to the given keyword? Accepts the exact
+/// name, its synonyms and the usual shorthands (`load`, `transition`, …).
+///
+/// Exposed so that the comparison helper and the table lookup agree on what
+/// an axis is called.
+#[pyfunction]
+fn axis_role_matches(role: &str, keyword: &str) -> bool {
+    role_matches_role(role, keyword)
 }
 
 #[pyfunction]
@@ -1382,6 +2061,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_file, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize_str, m)?)?;
+    m.add_function(wrap_pyfunction!(axis_role_matches, m)?)?;
     Ok(())
 }
 
@@ -2453,8 +3133,14 @@ impl LibraryIndex {
             .ranges
             .get(name)
             .ok_or_else(|| CellLookupError::Unknown(name.to_string()))?;
-        let doc = parse_slice_as_library(&self.library_name, &self.data[start..end])
+        let mut doc = parse_slice_as_library(&self.library_name, &self.data[start..end])
             .map_err(CellLookupError::Parse)?;
+        // The cell slice is parsed on its own, so the library header's units
+        // and templates have to be applied to it here.
+        if let Some(cell) = doc.cells.first_mut() {
+            apply_units(std::slice::from_mut(cell), self.header.units);
+            resolve_axis_vars(std::slice::from_mut(cell), &self.header.templates);
+        }
         doc.cells
             .into_iter()
             .next()
@@ -2504,6 +3190,10 @@ struct Token {
     kind: TokenKind,
     line: usize,
     column: usize,
+    /// Byte offset of the first byte of the token in the (decompressed) source.
+    start: usize,
+    /// Byte offset just past the last byte of the token.
+    end: usize,
 }
 
 struct Lexer {
@@ -2512,7 +3202,15 @@ struct Lexer {
     line: usize,
     column: usize,
     eof: bool,
+    /// Byte offset of the next byte to consume (source position).
+    offset: usize,
+    /// FNV-1a hash over every byte consumed so far. Used to detect that the
+    /// source file changed underneath a parsed document before writing it back.
+    hash: u64,
 }
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 impl Lexer {
     fn new(reader: Box<dyn Read>) -> Result<Self, ParseError> {
@@ -2522,6 +3220,8 @@ impl Lexer {
             line: 1,
             column: 1,
             eof: false,
+            offset: 0,
+            hash: FNV_OFFSET,
         })
     }
 
@@ -2533,12 +3233,15 @@ impl Lexer {
 
         let line = self.line;
         let column = self.column;
+        let start = self.offset;
         let byte = self.bump()?.unwrap();
         if is_symbol(byte) {
             return Ok(Some(Token {
                 kind: TokenKind::Symbol(byte),
                 line,
                 column,
+                start,
+                end: self.offset,
             }));
         }
         if byte == b'"' || byte == b'\'' {
@@ -2547,6 +3250,8 @@ impl Lexer {
                 kind: TokenKind::Word(value),
                 line,
                 column,
+                start,
+                end: self.offset,
             }));
         }
 
@@ -2587,6 +3292,8 @@ impl Lexer {
             kind: TokenKind::Word(String::from_utf8_lossy(&value).into_owned()),
             line,
             column,
+            start,
+            end: self.offset,
         }))
     }
 
@@ -2698,6 +3405,9 @@ impl Lexer {
         } else {
             self.column += 1;
         }
+        self.offset += 1;
+        self.hash ^= byte as u64;
+        self.hash = self.hash.wrapping_mul(FNV_PRIME);
         Ok(Some(byte))
     }
 
@@ -2729,8 +3439,11 @@ struct LibraryUnits {
     current: Option<String>,
     time: Option<String>,
     capacitive_load: Option<String>,
+    capacitive_load_multiplier: Option<f64>,
+    leakage_power: Option<String>,
     templates: Vec<(String, [Option<String>; 3])>,
     attributes: Vec<(String, String)>,
+    operating_conditions: Vec<(String, Vec<(String, String)>)>,
     driver_waveforms: Vec<TimingTableData>,
 }
 
@@ -2738,6 +3451,11 @@ struct Parser {
     lexer: Lexer,
     current: Option<Token>,
     cell_filter: Option<HashSet<String>>,
+    /// End offset of the most recently consumed token. `advance()` overwrites
+    /// it, so it is only meaningful right after a token has been consumed.
+    previous_end: usize,
+    /// Byte span (start, end) of every parsed cell group, in source order.
+    cell_spans: Vec<(String, usize, usize)>,
 }
 
 impl Parser {
@@ -2749,6 +3467,8 @@ impl Parser {
             lexer: Lexer::new(reader)?,
             current: None,
             cell_filter,
+            previous_end: 0,
+            cell_spans: Vec::new(),
         };
         parser.advance()?;
         Ok(parser)
@@ -2769,6 +3489,7 @@ impl Parser {
                 kind: TokenKind::Symbol(b'}'),
                 line,
                 column,
+                ..
             }) = self.current
             {
                 return Err(ParseError::new(
@@ -2810,6 +3531,21 @@ impl Parser {
             return Err(self.error_here("missing top-level library group"));
         }
 
+        // The library header is only fully known once the body has been read
+        // (units and templates may be declared after the cells that use them),
+        // so resolve them now.
+        let unit_context = UnitContext::from_library(
+            units.voltage.as_deref(),
+            units.current.as_deref(),
+            units.time.as_deref(),
+            units.capacitive_load_multiplier,
+            units.capacitive_load.as_deref(),
+            units.leakage_power.as_deref(),
+        );
+        apply_units(&mut cells, unit_context);
+        resolve_axis_vars(&mut cells, &units.templates);
+        resolve_axis_vars_in(&mut units.driver_waveforms, &units.templates);
+
         Ok(Document {
             library_name,
             voltage_unit: units.voltage,
@@ -2818,9 +3554,18 @@ impl Parser {
             capacitive_load_unit: units.capacitive_load,
             templates: units.templates,
             attributes: units.attributes,
+            operating_conditions: units.operating_conditions,
+            capacitive_load_multiplier: units.capacitive_load_multiplier,
+            leakage_power_unit: units.leakage_power,
             driver_waveforms: units.driver_waveforms,
             cells,
             bus_types,
+            source_path: None,
+            source_len: self.lexer.offset,
+            source_hash: self.lexer.hash,
+            cell_spans: std::mem::take(&mut self.cell_spans),
+            edits: Arc::new(Mutex::new(Vec::new())),
+            units: unit_context,
         })
     }
 
@@ -2831,6 +3576,7 @@ impl Parser {
         units: &mut LibraryUnits,
     ) -> Result<(), ParseError> {
         while !self.consume_symbol(b'}')? {
+            let item_start = self.current_offset();
             let name = self.take_word()?;
             if self.consume_symbol(b'(')? {
                 let args = self.read_args(&name)?;
@@ -2843,7 +3589,11 @@ impl Parser {
                                 .as_ref()
                                 .map_or(true, |filter| filter.contains(&cell_name))
                             {
-                                cells.push(self.parse_cell_body(cell_name)?);
+                                cells.push(self.parse_cell_body(cell_name.clone())?);
+                                // `previous_end` is the end of the cell's closing
+                                // brace: the group text is [item_start, end).
+                                self.cell_spans
+                                    .push((cell_name, item_start, self.previous_end));
                             } else {
                                 self.skip_group_body()?;
                             }
@@ -2854,6 +3604,11 @@ impl Parser {
                                     args.first().cloned().unwrap_or_default(),
                                 )?,
                             );
+                        }
+                        "operating_conditions" => {
+                            let oc_name = args.first().cloned().unwrap_or_default();
+                            let attrs = self.parse_operating_conditions_body()?;
+                            units.operating_conditions.push((oc_name, attrs));
                         }
                         "lu_table_template" | "power_lut_template" | "output_current_template" => {
                             let tmpl_name = args.first().cloned().unwrap_or_default();
@@ -2875,6 +3630,8 @@ impl Parser {
                     // Complex attribute, e.g. `capacitive_load_unit (1, ff)`.
                     if name == "capacitive_load_unit" {
                         units.capacitive_load = args.get(1).cloned();
+                        units.capacitive_load_multiplier =
+                            args.first().and_then(|value| parse_number(value));
                     }
                     units.attributes.push((name, args.join(", ")));
                     self.consume_symbol(b';')?;
@@ -2885,6 +3642,7 @@ impl Parser {
                     "voltage_unit" => units.voltage = Some(value.clone()),
                     "current_unit" => units.current = Some(value.clone()),
                     "time_unit" => units.time = Some(value.clone()),
+                    "leakage_power_unit" => units.leakage_power = Some(value.clone()),
                     _ => {}
                 }
                 units.attributes.push((name, value));
@@ -2979,6 +3737,7 @@ impl Parser {
             latch,
             leakage_powers,
             pg_pins,
+            units: UnitContext::default(),
         })
     }
 
@@ -3253,6 +4012,7 @@ impl Parser {
             timing_arcs,
             internal_powers,
             attributes,
+            units: UnitContext::default(),
         })
     }
 
@@ -3332,6 +4092,7 @@ impl Parser {
                             timing_arcs: Vec::new(),
                             internal_powers: Vec::new(),
                             attributes: Vec::new(),
+                            units: UnitContext::default(),
                         }));
                     }
                     self.consume_symbol(b';')?;
@@ -3428,6 +4189,30 @@ impl Parser {
             }
         }
         Ok(BusTypeData { name, attributes })
+    }
+
+    /// Parse an `operating_conditions` body: its simple/complex attributes
+    /// (`nom_voltage`, `nom_temperature`, `process`, …). Nested groups are
+    /// skipped.
+    fn parse_operating_conditions_body(&mut self) -> Result<Vec<(String, String)>, ParseError> {
+        let mut attributes = Vec::new();
+        while !self.consume_symbol(b'}')? {
+            let item_name = self.take_word()?;
+            if self.consume_symbol(b'(')? {
+                let args = self.read_args(&item_name)?;
+                if self.consume_symbol(b'{')? {
+                    self.skip_group_body()?;
+                }
+                attributes.push((item_name, args.join(", ")));
+                self.consume_symbol(b';')?;
+            } else if self.consume_symbol(b':')? {
+                let value = self.read_simple_attribute_value()?;
+                attributes.push((item_name, value));
+            } else {
+                return Err(self.error_here("expected '(' or ':' in operating_conditions"));
+            }
+        }
+        Ok(attributes)
     }
 
     /// Read `variable_1/2/3` from a lookup-table template group, skipping the
@@ -3637,6 +4422,7 @@ impl Parser {
             index_3,
             values,
             template,
+            axis_vars: [None, None, None],
             reference_time,
             vectors,
         })
@@ -3760,8 +4546,19 @@ impl Parser {
     }
 
     fn advance(&mut self) -> Result<(), ParseError> {
+        if let Some(token) = &self.current {
+            self.previous_end = token.end;
+        }
         self.current = self.lexer.next_token()?;
         Ok(())
+    }
+
+    /// Byte offset of the first byte of the current token.
+    fn current_offset(&self) -> usize {
+        match &self.current {
+            Some(token) => token.start,
+            None => self.lexer.offset,
+        }
     }
 
     fn current_position(&self) -> (usize, usize) {
@@ -3855,6 +4652,620 @@ fn unit_scale(value: &str) -> Option<f64> {
 
 fn parse_number(value: &str) -> Option<f64> {
     value.parse::<f64>().ok()
+}
+
+/// Position of a coordinate on an axis, allowing for floating point noise.
+/// Returns None when the coordinate is not on the axis.
+fn find_axis_position(values: &[f64], target: f64) -> Option<usize> {
+    values.iter().position(|value| {
+        let tolerance = 1e-12 + 1e-9 * value.abs().max(target.abs());
+        (value - target).abs() <= tolerance
+    })
+}
+
+/// Flat position of a grid point in the flat `values` list: `index_3` varies
+/// fastest, then `index_2`, then `index_1`.
+fn flat_index(index_1: usize, index_2: usize, index_3: usize, len_2: usize, len_3: usize) -> usize {
+    let len_2 = len_2.max(1);
+    let len_3 = len_3.max(1);
+    index_1 * len_2 * len_3 + index_2 * len_3 + index_3
+}
+
+/// The axis-variable names a keyword belongs to. Two names in the same group
+/// mean the same physical quantity, so a load axis named
+/// `output_capacitance` matches one named `total_output_net_capacitance`.
+fn role_synonyms(name: &str) -> &'static [&'static str] {
+    match name {
+        "load"
+        | "cap"
+        | "capacitance"
+        | "output_cap"
+        | "output_capacitance"
+        | "total_output_net_capacitance"
+        | "output_net_capacitance" => &[
+            "total_output_net_capacitance",
+            "output_net_capacitance",
+            "output_capacitance",
+            "capacitance",
+        ],
+        "transition" | "slew" | "input_slew" | "input_transition" | "input_net_transition" => {
+            &["input_net_transition", "input_transition"]
+        }
+        "time" => &["time"],
+        "voltage" | "vin" | "input_voltage" => &["input_voltage", "voltage"],
+        "current" | "iout" | "output_current" => &["output_current", "current"],
+        _ => &[],
+    }
+}
+
+/// Does an axis role answer to the given keyword? Accepts the exact template
+/// variable name, its synonyms and the usual shorthands (`load`, `transition`,
+/// `slew`, …).
+fn role_matches_role(role: &str, keyword: &str) -> bool {
+    if role == keyword {
+        return true;
+    }
+    let group = role_synonyms(keyword);
+    !group.is_empty() && group.contains(&role)
+}
+
+/// Value of an attribute list entry, or None if the key is absent.
+fn attribute_value(attributes: &[(String, String)], key: &str) -> Option<String> {
+    attributes
+        .iter()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.clone())
+}
+
+/// Parse the first number of an attribute value. Complex attributes are stored
+/// as `"1.0, 2.0"`; the leading value is the one that carries the meaning for
+/// the scalar accessors.
+fn parse_first_number(value: &str) -> Option<f64> {
+    value
+        .split(',')
+        .next()
+        .and_then(|item| item.trim().parse::<f64>().ok())
+}
+
+/// FNV-1a hash of a byte slice (must match the lexer's running hash).
+fn fnv1a(data: &[u8]) -> u64 {
+    let mut hash = FNV_OFFSET;
+    for byte in data {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+// ---- writer ---------------------------------------------------------------
+//
+// The writer is *surgical*: it keeps the original source text and rewrites only
+// the attributes that were changed through `Cell::set_attribute` /
+// `Pin::set_attribute`. Everything else — comments, spacing, unknown groups —
+// survives byte for byte.
+
+impl Document {
+    /// The operating condition used for the `nom_*` accessors: the group named
+    /// by the library attribute `default_operating_conditions`, else the group
+    /// named "default", else the first group.
+    fn default_operating_condition(&self) -> Option<&Vec<(String, String)>> {
+        let named = self.get("default_operating_conditions");
+        self.operating_conditions
+            .iter()
+            .find(|(name, _)| Some(name.as_str()) == named.as_deref())
+            .or_else(|| {
+                self.operating_conditions
+                    .iter()
+                    .find(|(name, _)| name == "default")
+            })
+            .or_else(|| self.operating_conditions.first())
+            .map(|(_, attributes)| attributes)
+    }
+
+    /// Read the original source text, verifying that the file has not changed
+    /// since the document was parsed.
+    fn read_source_text(&self) -> PyResult<String> {
+        let path = self.source_path.as_ref().ok_or_else(|| {
+            PyValueError::new_err(
+                "this document has no source file; only documents parsed from a \
+                 file can be written back",
+            )
+        })?;
+        let data = read_to_memory(path).map_err(|err| PyValueError::new_err(err.to_string()))?;
+        if data.len() != self.source_len || fnv1a(&data) != self.source_hash {
+            return Err(PyValueError::new_err(format!(
+                "source file {path:?} changed since it was parsed; re-parse it \
+                 before writing"
+            )));
+        }
+        String::from_utf8(data).map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+}
+
+impl Cell {
+    /// Apply the edits already recorded for this cell to a fresh copy, so that
+    /// `doc.cell(name)` sees the changes made through a previous handle.
+    fn apply_edits(&mut self) {
+        let Some(edits) = &self.edits else {
+            return;
+        };
+        let Ok(edits) = edits.lock() else {
+            return;
+        };
+        for edit in edits.iter() {
+            if edit.cell == self.name && edit.pin.is_none() {
+                set_attribute_in(&mut self.attributes, &edit.key, &edit.value);
+                if edit.key == "area" {
+                    self.area = parse_first_number(&edit.value);
+                }
+            }
+        }
+    }
+
+    /// Apply an attribute change to the in-memory model and record it on the
+    /// owning document's edit log.
+    fn set_attribute_text(&mut self, key: &str, text: &str) -> PyResult<()> {
+        let Some(edits) = &self.edits else {
+            // Without a document there is nowhere to record the change, so the
+            // edit would be silently lost when the file is written. Refuse.
+            return Err(PyRuntimeError::new_err(format!(
+                "cell {:?} is not attached to a document; attribute edits cannot be \
+                 written back",
+                self.name
+            )));
+        };
+        set_attribute_in(&mut self.attributes, key, text);
+        if key == "area" {
+            self.area = parse_first_number(text);
+        }
+        let mut edits = edits
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("document edit log is poisoned"))?;
+        edits.push(AttrEdit {
+            cell: self.name.clone(),
+            pin: None,
+            key: key.to_string(),
+            value: text.to_string(),
+        });
+        Ok(())
+    }
+}
+
+impl Pin {
+    /// Apply the edits already recorded for this pin to a fresh copy.
+    fn apply_edits(&mut self) {
+        let (Some(edits), Some(cell)) = (&self.edits, &self.cell_name) else {
+            return;
+        };
+        let Ok(edits) = edits.lock() else {
+            return;
+        };
+        for edit in edits.iter() {
+            if edit.cell == *cell && edit.pin.as_deref() == Some(self.name.as_str()) {
+                set_attribute_in(&mut self.attributes, &edit.key, &edit.value);
+            }
+        }
+    }
+
+    /// Apply an attribute change to the in-memory model and record it on the
+    /// owning document's edit log.
+    fn set_attribute_text(&mut self, key: &str, text: &str) -> PyResult<()> {
+        let (Some(edits), Some(cell)) = (&self.edits, &self.cell_name) else {
+            // Without a document there is nowhere to record the change, so the
+            // edit would be silently lost when the file is written. Refuse.
+            return Err(PyRuntimeError::new_err(format!(
+                "pin {:?} is not attached to a document; attribute edits cannot be \
+                 written back",
+                self.name
+            )));
+        };
+        set_attribute_in(&mut self.attributes, key, text);
+        let mut edits = edits
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("document edit log is poisoned"))?;
+        edits.push(AttrEdit {
+            cell: cell.clone(),
+            pin: Some(self.name.clone()),
+            key: key.to_string(),
+            value: text.to_string(),
+        });
+        Ok(())
+    }
+}
+
+/// Replace an attribute's value in an ordered attribute list, or append it
+/// when the key is not present yet.
+fn set_attribute_in(attributes: &mut Vec<(String, String)>, key: &str, value: &str) {
+    if let Some(entry) = attributes.iter_mut().find(|(name, _)| name == key) {
+        entry.1 = value.to_string();
+    } else {
+        attributes.push((key.to_string(), value.to_string()));
+    }
+}
+
+/// Convert a Python attribute value (string, bool or number) to Liberty text.
+fn attribute_value_text(value: &Bound<'_, PyAny>) -> PyResult<String> {
+    if let Ok(text) = value.cast::<PyString>() {
+        return Ok(text.to_str()?.to_string());
+    }
+    // Liberty spells booleans "true"/"false"; a Python bool would otherwise
+    // come out as 1/0.
+    if let Ok(flag) = value.extract::<bool>() {
+        return Ok(if flag { "true" } else { "false" }.to_string());
+    }
+    if let Ok(number) = value.extract::<f64>() {
+        if number.is_finite() && number.fract() == 0.0 && number.abs() < 1e15 {
+            return Ok(format!("{}", number as i64));
+        }
+        return Ok(format!("{number}"));
+    }
+    Err(PyValueError::new_err(
+        "attribute value must be a string, a bool or a number",
+    ))
+}
+
+/// A group header found in a cell's source text.
+struct SourceGroup {
+    keyword: String,
+    arg: Option<String>,
+    /// Byte offset of the group's closing brace.
+    close: usize,
+}
+
+/// A simple or complex attribute found in a cell's source text.
+struct SourceAttribute {
+    /// Index into the group stack.
+    group: usize,
+    key: String,
+    /// Byte range of the whole attribute (name through value).
+    start: usize,
+    end: usize,
+    complex: bool,
+}
+
+/// Scan one cell group's source text and return its groups and attributes.
+fn scan_source_groups(text: &str) -> PyResult<(Vec<SourceGroup>, Vec<SourceAttribute>)> {
+    let mut lexer = Lexer::new(Box::new(io::Cursor::new(text.as_bytes().to_vec())))
+        .map_err(ParseError::into_py)?;
+    let mut tokens = Vec::new();
+    while let Some(token) = lexer.next_token().map_err(ParseError::into_py)? {
+        tokens.push(token);
+    }
+    if tokens.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let mut groups: Vec<SourceGroup> = Vec::new();
+    let mut attributes: Vec<SourceAttribute> = Vec::new();
+    // Indices of the currently open groups, outermost first.
+    let mut open: Vec<usize> = Vec::new();
+    let mut index = 0usize;
+    while index < tokens.len() {
+        match &tokens[index].kind {
+            TokenKind::Symbol(b'}') => {
+                if let Some(group) = open.pop() {
+                    groups[group].close = tokens[index].start;
+                }
+                index += 1;
+            }
+            TokenKind::Word(word) => {
+                let is_paren = matches!(
+                    tokens.get(index + 1).map(|token| &token.kind),
+                    Some(TokenKind::Symbol(b'('))
+                );
+                if is_paren {
+                    // Find the matching ')'.
+                    let mut depth = 0i32;
+                    let mut cursor = index + 1;
+                    let mut close = tokens.len().saturating_sub(1);
+                    while cursor < tokens.len() {
+                        match tokens[cursor].kind {
+                            TokenKind::Symbol(b'(') => depth += 1,
+                            TokenKind::Symbol(b')') => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    close = cursor;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        cursor += 1;
+                    }
+                    let opens_group = matches!(
+                        tokens.get(close + 1).map(|token| &token.kind),
+                        Some(TokenKind::Symbol(b'{'))
+                    );
+                    if opens_group {
+                        let arg = match tokens.get(index + 2).map(|token| &token.kind) {
+                            Some(TokenKind::Word(value)) => Some(value.clone()),
+                            _ => None,
+                        };
+                        groups.push(SourceGroup {
+                            keyword: word.clone(),
+                            arg,
+                            close: 0,
+                        });
+                        open.push(groups.len() - 1);
+                        index = close + 2;
+                        continue;
+                    }
+                    attributes.push(SourceAttribute {
+                        group: open.last().copied().unwrap_or(0),
+                        key: word.clone(),
+                        start: tokens[index].start,
+                        end: tokens[close].end,
+                        complex: true,
+                    });
+                    index = close + 1;
+                    continue;
+                }
+                let is_colon = matches!(
+                    tokens.get(index + 1).map(|token| &token.kind),
+                    Some(TokenKind::Symbol(b':'))
+                );
+                if is_colon {
+                    // Simple attribute: the value runs to the ';'.
+                    let mut cursor = index + 2;
+                    let mut end = tokens[index].end;
+                    while cursor < tokens.len() {
+                        if matches!(tokens[cursor].kind, TokenKind::Symbol(b';')) {
+                            break;
+                        }
+                        end = tokens[cursor].end;
+                        cursor += 1;
+                    }
+                    attributes.push(SourceAttribute {
+                        group: open.last().copied().unwrap_or(0),
+                        key: word.clone(),
+                        start: tokens[index].start,
+                        end,
+                        complex: false,
+                    });
+                    index = cursor;
+                    continue;
+                }
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    Ok((groups, attributes))
+}
+
+/// Render an attribute value: quote it when it is empty or contains spaces.
+fn render_attribute_value(value: &str) -> String {
+    if value.is_empty() || value.contains(char::is_whitespace) {
+        format!("\"{value}\"")
+    } else {
+        value.to_string()
+    }
+}
+
+/// Render the arguments of a complex attribute, keeping it complex: a value of
+/// "0.1, 0.2" becomes `(0.1, 0.2)`, not a single quoted string.
+fn render_complex_attribute_value(value: &str) -> String {
+    let parts: Vec<String> = value
+        .split(',')
+        .map(|part| render_attribute_value(part.trim()))
+        .collect();
+    parts.join(", ")
+}
+
+/// Apply attribute edits to one cell group's source text.
+///
+/// Every edit is turned into a `(start, end, text)` range against the
+/// *original* text — an insertion is an empty range — and all of them are
+/// applied in a single back-to-front pass, so no edit can shift another.
+fn patch_cell_text(cell_text: &str, cell_name: &str, edits: &[&AttrEdit]) -> PyResult<String> {
+    let (groups, attributes) = scan_source_groups(cell_text)?;
+
+    let cell_group = groups
+        .iter()
+        .position(|group| group.keyword == "cell")
+        .ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "cell {cell_name:?} has no cell group in the source"
+            ))
+        })?;
+
+    // (start, end, replacement, order) against the original text.
+    let mut patches: Vec<(usize, usize, String, usize)> = Vec::new();
+
+    for (order, edit) in edits.iter().enumerate() {
+        let target_group = match &edit.pin {
+            None => cell_group,
+            Some(pin) => groups
+                .iter()
+                .position(|group| group.keyword == "pin" && group.arg.as_deref() == Some(pin))
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!("cell {cell_name:?} has no pin {pin:?} to edit"))
+                })?,
+        };
+        let existing = attributes
+            .iter()
+            .find(|attribute| attribute.group == target_group && attribute.key == edit.key);
+        match existing {
+            Some(attribute) => {
+                let rendered = if attribute.complex {
+                    format!(
+                        "{} ({})",
+                        edit.key,
+                        render_complex_attribute_value(&edit.value)
+                    )
+                } else {
+                    format!("{} : {}", edit.key, render_attribute_value(&edit.value))
+                };
+                patches.push((attribute.start, attribute.end, rendered, order));
+            }
+            None => {
+                // Add a new attribute to the group.
+                let group = &groups[target_group];
+                let line_start = cell_text[..group.close]
+                    .rfind('\n')
+                    .map(|position| position + 1)
+                    .unwrap_or(0);
+                let before_brace = &cell_text[line_start..group.close];
+                let brace_alone_on_line = before_brace.trim().is_empty();
+                let closing_indent: String = before_brace
+                    .chars()
+                    .take_while(|ch| ch.is_whitespace())
+                    .collect();
+                let rendered = format!("{} : {};", edit.key, render_attribute_value(&edit.value));
+                let newline = if cell_text.contains("\r\n") {
+                    "\r\n"
+                } else {
+                    "\n"
+                };
+                if brace_alone_on_line {
+                    // The group ends on a line of its own: add the attribute
+                    // as a new line above it, one level deeper.
+                    let indent = attributes
+                        .iter()
+                        .find(|attribute| attribute.group == target_group)
+                        .and_then(|attribute| {
+                            let start = cell_text[..attribute.start]
+                                .rfind('\n')
+                                .map(|position| position + 1)
+                                .unwrap_or(0);
+                            let line = &cell_text[start..attribute.start];
+                            let whitespace: String =
+                                line.chars().take_while(|ch| ch.is_whitespace()).collect();
+                            if whitespace.len() == line.len() && !whitespace.is_empty() {
+                                Some(whitespace)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| format!("{closing_indent}  "));
+                    patches.push((
+                        line_start,
+                        line_start,
+                        format!("{indent}{rendered}{newline}"),
+                        order,
+                    ));
+                } else {
+                    // The group is written on one line: keep it that way and
+                    // add the attribute in front of the closing brace.
+                    let separator = if cell_text[..group.close]
+                        .chars()
+                        .next_back()
+                        .map(|ch| ch.is_whitespace())
+                        .unwrap_or(false)
+                    {
+                        ""
+                    } else {
+                        " "
+                    };
+                    patches.push((
+                        group.close,
+                        group.close,
+                        format!("{separator}{rendered} "),
+                        order,
+                    ));
+                }
+            }
+        }
+    }
+
+    // Apply the edits back to front so the offsets stay valid. Edits at the
+    // same offset are applied in reverse order, so that they end up in the
+    // order they were made.
+    patches
+        .sort_by_key(|(start, _, _, order)| (std::cmp::Reverse(*start), std::cmp::Reverse(*order)));
+    let mut text = cell_text.to_string();
+    for (start, end, rendered, _) in patches {
+        text.replace_range(start..end, &rendered);
+    }
+    Ok(text)
+}
+
+/// Attach the library's unit scales to every cell and pin, so that scalar
+/// accessors can report values with their scale attached.
+fn apply_units(cells: &mut [CellData], ctx: UnitContext) {
+    for cell in cells {
+        cell.units = ctx;
+        for pin in &mut cell.pins {
+            pin.units = ctx;
+        }
+        for bus in &mut cell.buses {
+            for pin in &mut bus.pins {
+                pin.units = ctx;
+            }
+        }
+        for bundle in &mut cell.bundles {
+            for pin in &mut bundle.pins {
+                pin.units = ctx;
+            }
+        }
+    }
+}
+
+/// Look up a table template by name and return its axis variable names.
+fn template_vars(
+    templates: &[(String, [Option<String>; 3])],
+    name: &Option<String>,
+) -> Option<[Option<String>; 3]> {
+    let name = name.as_ref()?;
+    templates
+        .iter()
+        .find(|(template, _)| template == name)
+        .map(|(_, vars)| vars.clone())
+}
+
+/// Resolve the axis variable names of every table in a list (recursively, so
+/// CCS `vector` sub-tables are covered too).
+fn resolve_axis_vars_in(
+    tables: &mut [TimingTableData],
+    templates: &[(String, [Option<String>; 3])],
+) {
+    for table in tables.iter_mut() {
+        table.axis_vars = template_vars(templates, &table.template).unwrap_or([None, None, None]);
+        resolve_axis_vars_in(&mut table.vectors, templates);
+    }
+}
+
+/// Resolve the axis variable names of every table reachable from the cells.
+fn resolve_axis_vars(cells: &mut [CellData], templates: &[(String, [Option<String>; 3])]) {
+    fn resolve_arcs(arcs: &mut [TimingArcData], templates: &[(String, [Option<String>; 3])]) {
+        for arc in arcs.iter_mut() {
+            resolve_axis_vars_in(&mut arc.tables, templates);
+            for stage in arc.ccsn_stages.iter_mut() {
+                if let Some(table) = stage.dc_current.as_mut() {
+                    table.axis_vars =
+                        template_vars(templates, &table.template).unwrap_or([None, None, None]);
+                    resolve_axis_vars_in(&mut table.vectors, templates);
+                }
+                resolve_axis_vars_in(&mut stage.output_voltage_rise, templates);
+                resolve_axis_vars_in(&mut stage.output_voltage_fall, templates);
+            }
+        }
+    }
+    fn resolve_pins(pins: &mut [PinData], templates: &[(String, [Option<String>; 3])]) {
+        for pin in pins.iter_mut() {
+            resolve_arcs(&mut pin.timing_arcs, templates);
+            for group in pin.internal_powers.iter_mut() {
+                resolve_axis_vars_in(&mut group.tables, templates);
+            }
+        }
+    }
+    for cell in cells.iter_mut() {
+        resolve_pins(&mut cell.pins, templates);
+        for bus in cell.buses.iter_mut() {
+            resolve_arcs(&mut bus.timing_arcs, templates);
+            resolve_pins(&mut bus.pins, templates);
+        }
+        for bundle in cell.bundles.iter_mut() {
+            resolve_arcs(&mut bundle.timing_arcs, templates);
+            resolve_pins(&mut bundle.pins, templates);
+        }
+        for dynamic in cell.dynamic_currents.iter_mut() {
+            for group in dynamic.switching_groups.iter_mut() {
+                for current in group.pg_currents.iter_mut() {
+                    resolve_axis_vars_in(&mut current.vectors, templates);
+                }
+            }
+        }
+    }
 }
 
 fn parse_float_list(value: Option<&String>) -> Vec<f64> {

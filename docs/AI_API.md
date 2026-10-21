@@ -19,15 +19,36 @@ into Python strings.
 
 ```python
 lt.parse_file(path: str | Path, cells: list[str] | None = None) -> LibertyDocument
+lt.compare(a, b, cells=None, cell=None, pin=None, table=None,
+           interpolate=False, grid=None, tolerance=1e-9) -> Comparison
 
 doc.library_name -> str
+doc.voltage_unit -> str | None
+doc.current_unit -> str | None
+doc.time_unit -> str | None
+doc.capacitive_load_unit -> str | None
+doc.capacitive_load_multiplier -> float | None
+doc.leakage_power_unit -> str | None
+doc.default_max_transition -> float | None
+doc.default_fanout_load -> float | None
+doc.nom_voltage -> float | None
+doc.nom_temperature -> float | None
 doc.cells() -> list[str]
 doc.cell(name: str) -> Cell
 doc.bus_types() -> list[str]
 doc.bus_type(name: str) -> BusType
+doc.templates() -> dict[str, list[str | None]]
+doc.attributes() -> list[tuple[str, str]]
+doc.get(key: str) -> str | None
+doc.operating_conditions() -> list[tuple[str, list[tuple[str, str]]]]
+doc.operating_condition(name: str) -> list[tuple[str, str]]
+doc.energy_unit_joules() -> float | None
+doc.driver_waveforms() -> list[TimingTable]
 doc.timing_tables(...) -> list[dict[str, object]]
 doc.internal_power_tables(...) -> list[dict[str, object]]
 doc.to_polars(kind="timing", **filters) -> polars.DataFrame   # kind="power" for energy
+doc.to_string() -> str
+doc.write(path: str | Path) -> None
 
 cell.name -> str
 cell.area -> float | None
@@ -37,12 +58,47 @@ cell.buses() -> list[str]
 cell.bus(name: str) -> Bus
 cell.bundles() -> list[str]
 cell.bundle(name: str) -> Bundle
+cell.attributes() -> list[tuple[str, str]]
+cell.get(key: str) -> str | None
+cell.set_attribute(key: str, value: str | float | int) -> None
+cell.set_area(value: float) -> None
+cell.cell_leakage_power -> float | None
+cell.cell_leakage_power_watts -> float | None
+cell.cell_footprint -> str | None
+cell.dont_touch -> str | None
+cell.dont_use -> str | None
+cell.dynamic_currents() -> list[DynamicCurrent]
+cell.ff() -> Ff | None
+cell.latch() -> Latch | None
+cell.leakage_powers() -> list[LeakagePower]
+cell.pg_pins() -> list[PgPin]
 
 pin.name -> str
 pin.direction -> str | None
 pin.function -> str | None
+pin.three_state -> str | None
+pin.power_down_function -> str | None
+pin.attributes() -> list[tuple[str, str]]
+pin.get(key: str) -> str | None
+pin.set_attribute(key: str, value: str | float | int) -> None
+pin.capacitance -> float | None
+pin.capacitance_farads -> float | None
+pin.rise_capacitance -> float | None
+pin.rise_capacitance_farads -> float | None
+pin.fall_capacitance -> float | None
+pin.fall_capacitance_farads -> float | None
+pin.max_transition -> float | None
+pin.max_transition_seconds -> float | None
+pin.min_pulse_width_high -> float | None
+pin.min_pulse_width_high_seconds -> float | None
+pin.min_pulse_width_low -> float | None
+pin.min_pulse_width_low_seconds -> float | None
+pin.min_pulse_width() -> MinPulseWidth | None
 pin.timing_arcs(related_pin=None, timing_type=None, when=None) -> list[TimingArc]
-pin.internal_power() -> list[InternalPower]
+pin.internal_power(related_pin=None, related_pg_pin=None, when=None) -> list[InternalPower]
+pin.function_expr() -> BooleanExpression | None
+pin.three_state_expr() -> BooleanExpression | None
+pin.power_down_function_expr() -> BooleanExpression | None
 
 bus.name -> str
 bus.direction -> str | None
@@ -67,8 +123,12 @@ bus_type.get(key: str) -> str | None
 arc.related_pin -> str | None
 arc.timing_type -> str | None
 arc.when -> str | None
+arc.sdf_cond -> str | None
+arc.timing_sense -> str | None
 arc.tables() -> list[str]
 arc.table(name: str) -> TimingTable
+arc.when_expr() -> BooleanExpression | None
+arc.sdf_cond_expr() -> BooleanExpression | None
 arc.ccsn_stages() -> list[CcsnStage]   # CCS-noise stages (CCSN libraries)
 
 table.name -> str
@@ -76,8 +136,91 @@ table.index_1 -> list[float]
 table.index_2 -> list[float]
 table.index_3 -> list[float]
 table.values -> list[float]
+table.template -> str | None
+table.index_1_variable -> str | None
+table.index_2_variable -> str | None
+table.index_3_variable -> str | None
+table.reference_time -> float | None
+table.axis_roles() -> list[str | None]
+table.axis_role(axis: int) -> str | None
+table.lookup(index_1=None, index_2=None, index_3=None, **roles) -> float | None
+table.value_at(row: int, col: int, depth: int | None = None) -> float
+table.vectors() -> list[TimingTable]
 table.to_polars() -> polars.DataFrame
+
+lt.LibraryIndex.open(path) -> LibraryIndex
+index.library_name -> str
+index.cell_names() -> list[str]
+index.num_cells() -> int
+index.cell(name: str) -> Cell
+index.cell_source(name: str) -> str
+index.templates() -> dict[str, list[str | None]]
+index.attributes() -> list[tuple[str, str]]
+index.energy_unit_joules() -> float | None
 ```
+
+## Flat Value Ordering
+
+A table's `values` list is **flat** and **row-major** over the table's axes:
+`index_1` is the slowest axis, `index_3` the fastest.
+
+```text
+1-D:  values[i]
+2-D:  values[i * len(index_2) + j]
+3-D:  values[i * len(index_2) * len(index_3) + j * len(index_3) + k]
+```
+
+The long-form dataframes use the same convention: `row` indexes `index_1`,
+`col` indexes `index_2`, `depth` indexes `index_3`. Use `table.lookup()` or
+`table.value_at()` instead of deriving the flat index yourself.
+
+## Axis Roles
+
+The physical meaning of an axis comes from the table's lookup template, and
+it is **not** the same in every library: one file stores `index_1 =
+input_net_transition`, another stores `index_1 =
+total_output_net_capacitance`. Assuming the wrong order does not raise — it
+silently reads the wrong cell.
+
+```python
+table.axis_roles()      # ["input_net_transition", "total_output_net_capacitance"]
+table.axis_role(1)      # "input_net_transition"   (1 = index_1, 2 = index_2, 3 = index_3)
+table.index_1_variable  # "input_net_transition"
+table.template          # "delay_template_7x7_x1"
+doc.templates()["delay_template_7x7_x1"]
+# ["input_net_transition", "total_output_net_capacitance", None]
+```
+
+`axis_roles()` is truncated to the axes the table actually has, and an entry
+is `None` when the table has no template or the template does not name that
+axis.
+
+Names that mean the same physical quantity are interchangeable:
+`total_output_net_capacitance`, `output_net_capacitance`,
+`output_capacitance` and `capacitance` are all the load axis, and
+`input_net_transition` and `input_transition` are all the slew axis. The
+shorthands `load`, `cap`, `transition`, `slew`, `voltage` and `current` work
+too.
+
+## Table Lookup
+
+```python
+table.lookup(index_1=0.108, index_2=0.0966)   # by grid position
+table.lookup(load=0.108, transition=0.0966)    # by axis role
+table.lookup(total_output_net_capacitance=0.108, input_net_transition=0.0966)
+table.value_at(row=0, col=1)                   # by grid index
+table.value_at(row=0, col=1, depth=2)          # 3-D tables
+```
+
+- `lookup()` returns `None` when the point is not on the grid. It never
+  clamps and never raises for an off-grid point.
+- Every axis of the table needs a coordinate. A missing one raises
+  `ValueError`, as does an unknown role name.
+- Coordinates are matched against the axis values with a small relative
+  tolerance.
+- `value_at()` raises `IndexError` when the position is outside the table.
+  `row` indexes `index_1`, `col` indexes `index_2`, `depth` indexes
+  `index_3`.
 
 ## Timing DataFrame Schema
 
@@ -137,6 +280,27 @@ Supported operators:
 !  ~  postfix '  &  *  |  +  ^  parentheses
 ```
 
+Two more things to know:
+
+- A `when` filter **excludes** arcs that have no `when` attribute at all.
+- A filter never matches a `None` field: `related_pin="A"` excludes the
+  non-propagating energy groups, whose `related_pin` is null.
+
+`BooleanExpression` is available for the boolean fields themselves
+(`pin.function_expr()`, `arc.when_expr()`, …):
+
+```python
+expr = lt.BooleanExpression("A & !B")
+expr.variables      # ["A", "B"]
+expr.minterms()    # ["A*!B"]
+expr.eval({"A": True, "B": False})   # True
+expr.implies(other)                 # logical implication
+str(expr)                           # minimized sum-of-products
+```
+
+`==` and `hash` compare the canonical sum-of-minterms, so logically equal
+expressions are equal.
+
 ## Bus and Bundle Use
 
 RAM Liberty files commonly describe buses and bundles. Use these accessors:
@@ -167,15 +331,178 @@ Extract with `doc.to_polars(kind="power", ...)` or `doc.internal_power_tables(..
 rows carry `related_pg_pin`. Non-propagating energy (an input pin switches with
 no output switch) is included with a null `related_pin`.
 
+The values are in the library's own units; multiply by
+`doc.energy_unit_joules()` (voltage × current × time) for joules.
+
 ## 3-Axis Tables
 
 CCST/CCSP style tables with `index_1`, `index_2`, and `index_3` are flattened
-in row-major order. Treat the axes as slew, load, and time when the source
-Liberty table uses that convention:
+in row-major order (`index_3` varies fastest). Treat the axes as slew, load,
+and time when the source Liberty table uses that convention:
 
 ```python
 df = doc.to_polars(table="output_current_rise")
 df.select("index_1", "index_2", "index_3", "value")
+```
+
+## Scalar Attributes And Units
+
+Every group exposes its attributes as `(name, value)` string pairs, and
+`get()` gives a uniform lookup on the document, the cell and the pin:
+
+```python
+doc.get("default_max_transition")   # "0.1"
+cell.get("cell_leakage_power")      # "250.0"
+pin.get("capacitance")              # "0.0044679"
+```
+
+The typed accessors return numbers in the unit the library declares; the
+suffixed variants return SI:
+
+```python
+pin.capacitance            # in the library's capacitive_load_unit
+pin.capacitance_farads     # in farads
+pin.max_transition         # in the library's time_unit
+pin.max_transition_seconds # in seconds
+cell.cell_leakage_power    # in the library's power unit
+cell.cell_leakage_power_watts
+doc.nom_voltage            # in the library's voltage_unit
+```
+
+Which unit the library uses:
+
+```python
+doc.time_unit              # "1ns"
+doc.capacitive_load_unit   # "ff"
+doc.capacitive_load_multiplier  # 1.0
+doc.voltage_unit           # "1V"
+doc.current_unit           # "1mA"
+doc.leakage_power_unit     # "1pW"
+```
+
+The library's operating conditions are exposed too, and `nom_voltage` /
+`nom_temperature` come from the default one — the group named by
+`default_operating_conditions`, else the group named "default", else the
+first group:
+
+```python
+doc.operating_conditions()          # [("fast", [("voltage", "1.1"), ...]), ...]
+doc.operating_condition("fast")     # the attributes of one group
+doc.nom_voltage                     # 1.1
+doc.nom_temperature                 # -40.0
+```
+
+## Minimum Clock Pulse Width
+
+Two conventions express the same quantity. `min_pulse_width()` normalizes
+both:
+
+```python
+width = cell.pin("CLK").min_pulse_width()
+if width is not None:
+    high, low = width          # unpacks as (high, low)
+    print(high, low, width.source)   # "attribute" | "timing_group"
+```
+
+- The *attribute* form is the `min_pulse_width_high` / `min_pulse_width_low`
+  pin attributes. `pin.min_pulse_width_high` / `pin.min_pulse_width_low`
+  expose them directly.
+- The *timing group* form is a `min_pulse_width` timing arc on the clock pin
+  itself; the reported number is the largest value of its
+  `rise_constraint` / `fall_constraint` table.
+- The two forms measure slightly different things — the attribute form is the
+  minimum high/low *phase* width, the timing group form the minimum width
+  *per clock transition*. `MinPulseWidth.source` says which one you have.
+- The attribute form wins when a file uses both.
+- `None` when the file expresses the limit in neither form.
+
+## Writing A Library Back Out
+
+```python
+doc = lt.parse_file("cell.lib")
+doc.cell("mycell").set_attribute("area", "59.8752")
+doc.cell("mycell").pin("A").set_attribute("capacitance", 0.0044)
+
+doc.write("out.lib")     # ".gz" paths are written gzip-compressed
+text = doc.to_string()   # the same text as a string
+```
+
+- The write is **surgical**: the original file is preserved byte for byte and
+  only the changed attributes are rewritten. Comments, spacing and groups
+  this library does not model survive.
+- `set_attribute()` adds the attribute when it is not there yet. Setting
+  `area` also updates `cell.area`. A Python `bool` is written as `true` /
+  `false`; a complex attribute keeps its complex form.
+- Writing refuses to touch a file whose source changed since it was parsed
+  (`ValueError`).
+- Only attributes can be edited; groups cannot be added or removed.
+- Editing an attribute of a cell that is not attached to a document (a cell
+  from `LibraryIndex`, say) raises `RuntimeError`: the change could not be
+  written back.
+
+## Comparing Two Libraries
+
+```python
+a = lt.parse_file("ours.lib")
+b = lt.parse_file("pdk.lib")
+
+diff = lt.compare(a, b, cells=["mycell"])
+for entry in diff.entries:
+    print(entry.arc, entry.table, entry.index_1, entry.index_2,
+          entry.value_a, entry.value_b, entry.delta)
+
+diff.summary()        # counts and the worst delta
+diff.only_in_a        # arcs that only exist in the first document
+diff.only_in_b        # arcs that only exist in the second document
+diff.shape_mismatches # tables whose grids have a different number of axes
+diff.to_polars()      # the compared points as a dataframe
+```
+
+How the matching works:
+
+- Arcs are matched by pin, related pin and timing type. Within such a group
+  the `when` conditions are matched by logical equivalence (`"A & B"` matches
+  `"B & A"`). A condition that is only *implied* by the other describes a
+  different arc, so those arcs are reported as existing in only one of the
+  documents instead of being compared.
+- Tables are matched by name.
+- Grids are aligned **by axis role**, so the load axis of one library is
+  compared against the load axis of the other even when the two files store
+  them in a different order. When the roles are unknown the axes are matched
+  by position.
+- Points that exist in only one grid are reported with the missing side left
+  as `None` and `delta` left as `None`.
+- Tables with a different number of axes cannot be intersected or
+  interpolated; they are reported in `diff.shape_mismatches` instead.
+
+With `interpolate=True` the second document is interpolated onto the first
+document's grid instead of comparing only the shared points:
+
+```python
+diff = lt.compare(a, b, cell="mycell", interpolate=True)
+```
+
+A specific grid can be requested, keyed by axis role (or `index_1` …
+`index_3`):
+
+```python
+diff = lt.compare(
+    a, b, cell="mycell", interpolate=True,
+    grid={"total_output_net_capacitance": [0.1, 0.2], "input_net_transition": [1.5]},
+)
+```
+
+## Large Libraries
+
+`LibraryIndex` opens a multi-gigabyte library without parsing all of it. The
+library header is parsed up front; cells are parsed on demand.
+
+```python
+index = lt.LibraryIndex.open("huge.lib")
+index.num_cells()
+index.cell_names()
+cell = index.cell("mycell")        # parsed now
+source = index.cell_source("mycell")  # the raw text of that cell
 ```
 
 ## Do And Do Not
@@ -185,13 +512,19 @@ Do:
 - Use `parse_file(path)` directly.
 - Use `cells=[...]` for targeted extraction from large libraries.
 - Use `to_polars(...)` for tabular timing extraction.
+- Use `table.lookup(...)` instead of deriving the flat index.
+- Use `table.axis_roles()` instead of assuming an axis order.
 - Use Boolean `when` filters for state-dependent timing.
 - Use `cell.buses()`, `cell.bundles()`, and `doc.bus_types()` for RAM ports.
+- Use `doc.get(...)` and the typed accessors instead of hand-written
+  attribute loops.
 
 Do not:
 
 - Do not call `open(path).read()` before parsing.
 - Do not string-match `when` conditions.
+- Do not assume a fixed axis order (`index_1` is not always the load).
+- Do not scale values by hand when a typed accessor already carries the unit.
 - Do not assume this is a full Liberty AST API.
 - Do not expect all non-timing Liberty groups to be materialized yet.
 
@@ -200,3 +533,6 @@ Do not:
 - Unknown cell, pin, bus, bundle, bus type, or table: `KeyError`.
 - Invalid Boolean `when` expression: `ValueError`.
 - Liberty syntax parse error: `ValueError` with line and column.
+- Missing coordinate for a table axis, or an unknown axis role: `ValueError`.
+- Table position outside the grid: `IndexError`.
+- Writing a document whose source file changed: `ValueError`.

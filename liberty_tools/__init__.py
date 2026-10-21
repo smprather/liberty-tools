@@ -1,9 +1,36 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from . import _native
+from .compare import ArcKey, CompareEntry, Comparison, compare
+
+
+@dataclass(frozen=True)
+class MinPulseWidth:
+    """The minimum clock pulse width of a pin.
+
+    ``high`` and ``low`` are in the library's time unit. ``source`` says which
+    convention the value was read from: ``"attribute"`` for the
+    ``min_pulse_width_high`` / ``min_pulse_width_low`` pin attributes,
+    ``"timing_group"`` for a ``min_pulse_width`` timing arc.
+
+    The two forms measure slightly different things: the attribute form is
+    the minimum high/low *phase* width, the timing group form the minimum
+    width *per clock transition*.
+
+    Unpacks as ``high, low``.
+    """
+
+    high: float | None
+    low: float | None
+    source: str
+
+    def __iter__(self):
+        yield self.high
+        yield self.low
 
 
 class LibertyDocument:
@@ -38,6 +65,78 @@ class LibertyDocument:
     def attributes(self) -> list[tuple[str, str]]:
         """Ordered ``(name, value)`` library-group simple/complex attributes."""
         return self._native.attributes()
+
+    def get(self, key: str) -> str | None:
+        """Value of a library-group attribute, or ``None`` if it is absent.
+
+        The uniform escape hatch for library-level scalars::
+
+            doc.get("default_max_transition")   # -> "0.1"
+        """
+        return self._native.get(key)
+
+    def operating_conditions(self) -> list[tuple[str, list[tuple[str, str]]]]:
+        """``operating_conditions`` groups: ``(name, attributes)``."""
+        return self._native.operating_conditions()
+
+    def operating_condition(self, name: str) -> list[tuple[str, str]]:
+        """Attributes of one ``operating_conditions`` group.
+
+        Raises ``KeyError`` when the library has no such group.
+        """
+        return self._native.operating_condition(name)
+
+    @property
+    def capacitive_load_multiplier(self) -> float | None:
+        """The multiplier of ``capacitive_load_unit (1, ff)`` — the ``1``."""
+        return self._native.capacitive_load_multiplier
+
+    @property
+    def leakage_power_unit(self) -> str | None:
+        """``leakage_power_unit`` (e.g. ``"1pW"``) — the unit of the leakage
+        power values in the library."""
+        return self._native.leakage_power_unit
+
+    @property
+    def default_max_transition(self) -> float | None:
+        """``default_max_transition`` in the library time unit."""
+        return self._native.default_max_transition
+
+    @property
+    def default_fanout_load(self) -> float | None:
+        """``default_fanout_load`` (dimensionless)."""
+        return self._native.default_fanout_load
+
+    @property
+    def nom_voltage(self) -> float | None:
+        """``nom_voltage`` of the default operating condition, in the library
+        voltage unit."""
+        return self._native.nom_voltage
+
+    @property
+    def nom_temperature(self) -> float | None:
+        """``nom_temperature`` of the default operating condition."""
+        return self._native.nom_temperature
+
+    def to_string(self) -> str:
+        """The Liberty source text of this document.
+
+        With no pending edits this is the original file, byte for byte. Edits
+        made through :meth:`Cell.set_attribute` / :meth:`Pin.set_attribute` are
+        applied to the affected cell groups; every other byte of the file is
+        preserved (comments, spacing and groups this library does not model).
+
+        Raises ``ValueError`` when the document was not parsed from a file, or
+        when the source file changed since it was parsed.
+        """
+        return self._native.to_string()
+
+    def write(self, path: str | Path) -> None:
+        """Write the document to ``path`` (see :meth:`to_string`).
+
+        A path ending in ``.gz`` is written gzip-compressed.
+        """
+        self._native.write(str(path))
 
     def driver_waveforms(self) -> list[TimingTable]:
         """``normalized_driver_waveform`` tables (input slew × normalized voltage
@@ -169,6 +268,24 @@ def _wrap_expr(native: _native.BooleanExpression | None) -> BooleanExpression | 
     return BooleanExpression(native) if native is not None else None
 
 
+def _axis_role_matches(role: str, keyword: str) -> bool:
+    """Do two axis variable names mean the same physical quantity?
+
+    Accepts the exact template variable name, its synonyms
+    (``output_capacitance`` / ``total_output_net_capacitance``) and the usual
+    shorthands (``load``, ``transition``, ``slew``, …).
+    """
+    return _native.axis_role_matches(role, keyword)
+
+
+def _constraint_limit(arc: TimingArc, table_name: str) -> float | None:
+    """Tightest limit of a constraint table (the largest value it holds)."""
+    if table_name not in arc.tables():
+        return None
+    values = arc.table(table_name).values
+    return max(values) if values else None
+
+
 class Cell:
     def __init__(self, native: _native.Cell):
         self._native = native
@@ -202,6 +319,57 @@ class Cell:
     def attributes(self) -> list[tuple[str, str]]:
         """Ordered ``(name, value)`` cell-level simple/complex attributes."""
         return self._native.attributes()
+
+    def get(self, key: str) -> str | None:
+        """Value of a cell attribute, or ``None`` if it is absent.
+
+        The uniform escape hatch for cell-level scalars::
+
+            cell.get("cell_leakage_power")   # -> "250.0"
+        """
+        return self._native.get(key)
+
+    def set_attribute(self, key: str, value: str | float | int) -> None:
+        """Set (or add) a cell attribute.
+
+        The change is recorded on the owning document and applied by
+        :meth:`LibertyDocument.write` / :meth:`LibertyDocument.to_string`; the
+        rest of the file is preserved byte for byte::
+
+            doc.cell("mycell").set_attribute("area", "59.8752")
+
+        Setting ``area`` also updates :attr:`area`.
+        """
+        self._native.set_attribute(key, value)
+
+    def set_area(self, value: float) -> None:
+        """Set the cell ``area`` (the physical cell area, in library area units)."""
+        self._native.set_area(value)
+
+    @property
+    def cell_leakage_power(self) -> float | None:
+        """``cell_leakage_power`` in the library power unit (voltage × current)."""
+        return self._native.cell_leakage_power
+
+    @property
+    def cell_leakage_power_watts(self) -> float | None:
+        """``cell_leakage_power`` in watts."""
+        return self._native.cell_leakage_power_watts
+
+    @property
+    def cell_footprint(self) -> str | None:
+        """``cell_footprint`` (the cell's footprint name), if declared."""
+        return self._native.cell_footprint
+
+    @property
+    def dont_touch(self) -> str | None:
+        """``dont_touch`` as written in the file (``"true"`` / ``"false"``)."""
+        return self._native.dont_touch
+
+    @property
+    def dont_use(self) -> str | None:
+        """``dont_use`` as written in the file (``"true"`` / ``"false"``)."""
+        return self._native.dont_use
 
     def dynamic_currents(self) -> list[DynamicCurrent]:
         """CCS power (``dynamic_current``) groups."""
@@ -297,6 +465,123 @@ class Pin:
     def attributes(self) -> list[tuple[str, str]]:
         """Ordered ``(name, value)`` pin-level simple/complex attributes."""
         return self._native.attributes()
+
+    def get(self, key: str) -> str | None:
+        """Value of a pin attribute, or ``None`` if it is absent.
+
+        The uniform escape hatch for pin-level scalars::
+
+            pin.get("capacitance")   # -> "0.0044679"
+        """
+        return self._native.get(key)
+
+    def set_attribute(self, key: str, value: str | float | int) -> None:
+        """Set (or add) a pin attribute.
+
+        The change is recorded on the owning document and applied by
+        :meth:`LibertyDocument.write` / :meth:`LibertyDocument.to_string`::
+
+            doc.cell("mycell").pin("A").set_attribute("capacitance", 0.0044)
+        """
+        self._native.set_attribute(key, value)
+
+    @property
+    def capacitance(self) -> float | None:
+        """``capacitance`` in the library capacitive-load unit."""
+        return self._native.capacitance
+
+    @property
+    def capacitance_farads(self) -> float | None:
+        """``capacitance`` in farads."""
+        return self._native.capacitance_farads
+
+    @property
+    def rise_capacitance(self) -> float | None:
+        """``rise_capacitance`` in the library capacitive-load unit."""
+        return self._native.rise_capacitance
+
+    @property
+    def rise_capacitance_farads(self) -> float | None:
+        """``rise_capacitance`` in farads."""
+        return self._native.rise_capacitance_farads
+
+    @property
+    def fall_capacitance(self) -> float | None:
+        """``fall_capacitance`` in the library capacitive-load unit."""
+        return self._native.fall_capacitance
+
+    @property
+    def fall_capacitance_farads(self) -> float | None:
+        """``fall_capacitance`` in farads."""
+        return self._native.fall_capacitance_farads
+
+    @property
+    def max_transition(self) -> float | None:
+        """``max_transition`` in the library time unit."""
+        return self._native.max_transition
+
+    @property
+    def max_transition_seconds(self) -> float | None:
+        """``max_transition`` in seconds."""
+        return self._native.max_transition_seconds
+
+    @property
+    def min_pulse_width_high(self) -> float | None:
+        """``min_pulse_width_high`` in the library time unit.
+
+        This is the *pin attribute* form of the minimum clock pulse width; see
+        :meth:`min_pulse_width` for the normalized accessor.
+        """
+        return self._native.min_pulse_width_high
+
+    @property
+    def min_pulse_width_high_seconds(self) -> float | None:
+        """``min_pulse_width_high`` in seconds."""
+        return self._native.min_pulse_width_high_seconds
+
+    @property
+    def min_pulse_width_low(self) -> float | None:
+        """``min_pulse_width_low`` in the library time unit.
+
+        This is the *pin attribute* form of the minimum clock pulse width; see
+        :meth:`min_pulse_width` for the normalized accessor.
+        """
+        return self._native.min_pulse_width_low
+
+    @property
+    def min_pulse_width_low_seconds(self) -> float | None:
+        """``min_pulse_width_low`` in seconds."""
+        return self._native.min_pulse_width_low_seconds
+
+    def min_pulse_width(self) -> MinPulseWidth | None:
+        """The minimum clock pulse width, from whichever form the file uses.
+
+        Two conventions exist and a file may use either:
+
+        - the *attribute* form — ``min_pulse_width_high`` / ``min_pulse_width_low``
+          pin attributes, one number each;
+        - the *timing group* form — a ``min_pulse_width`` timing arc on the
+          clock pin itself, whose ``rise_constraint`` / ``fall_constraint``
+          tables hold the limit per clock transition.
+
+        The attribute form wins when both are present. For the timing group
+        form the reported number is the largest value of the constraint table
+        (the tightest limit over the tabulated clock transitions).
+
+        Returns ``None`` when the file expresses the limit in neither form.
+        The result unpacks as ``high, low`` and carries the form it was read
+        from in :attr:`MinPulseWidth.source`.
+        """
+        high = self.min_pulse_width_high
+        low = self.min_pulse_width_low
+        if high is not None or low is not None:
+            return MinPulseWidth(high, low, "attribute")
+        for arc in self.timing_arcs(timing_type="min_pulse_width"):
+            high = _constraint_limit(arc, "rise_constraint")
+            low = _constraint_limit(arc, "fall_constraint")
+            if high is not None or low is not None:
+                return MinPulseWidth(high, low, "timing_group")
+        return None
 
 
 class Bus:
@@ -736,6 +1021,24 @@ class Latch:
 
 
 class TimingTable:
+    """One Liberty lookup table.
+
+    The ``values`` list is **flat** and **row-major** over the table's axes:
+    ``index_1`` is the slowest axis and ``index_3`` the fastest. For a 2-D
+    table::
+
+        values[i * len(index_2) + j]     # i on index_1, j on index_2
+
+    and for a 3-D table::
+
+        values[i * len(index_2) * len(index_3) + j * len(index_3) + k]
+
+    The long-form dataframes use the same convention (``row`` indexes
+    ``index_1``, ``col`` indexes ``index_2``, ``depth`` indexes ``index_3``).
+    Use :meth:`lookup` or :meth:`value_at` rather than deriving the flat
+    index yourself.
+    """
+
     def __init__(self, native: _native.TimingTable):
         self._native = native
 
@@ -763,6 +1066,77 @@ class TimingTable:
     def template(self) -> str | None:
         """Lookup-table template name from the group header (axis variables)."""
         return self._native.template
+
+    def axis_roles(self) -> list[str | None]:
+        """The physical variable of each axis, in index order.
+
+        ``["input_net_transition", "total_output_net_capacitance"]`` for a
+        2-D NLDM table whose template says so. The list is truncated to the
+        axes the table actually has; entries are ``None`` when the table has
+        no template or the template does not name that axis.
+        """
+        return self._native.axis_roles()
+
+    def axis_role(self, axis: int) -> str | None:
+        """The variable of one axis: 1 = ``index_1``, 2 = ``index_2``,
+        3 = ``index_3``."""
+        return self._native.axis_role(axis)
+
+    @property
+    def index_1_variable(self) -> str | None:
+        """The variable of the ``index_1`` axis, e.g. ``"input_net_transition"``."""
+        return self._native.index_1_variable
+
+    @property
+    def index_2_variable(self) -> str | None:
+        """The variable of the ``index_2`` axis."""
+        return self._native.index_2_variable
+
+    @property
+    def index_3_variable(self) -> str | None:
+        """The variable of the ``index_3`` axis."""
+        return self._native.index_3_variable
+
+    def lookup(
+        self,
+        index_1: float | None = None,
+        index_2: float | None = None,
+        index_3: float | None = None,
+        **roles: float,
+    ) -> float | None:
+        """The value at a grid point, or ``None`` when the point is off-grid.
+
+        Give the position on each axis either by index::
+
+            table.lookup(index_1=0.108, index_2=0.0966)
+
+        or by the axis's physical variable — the template's variable name, or
+        the usual shorthands ``load`` and ``transition``::
+
+            table.lookup(load=0.108, transition=0.0966)
+
+        Every axis of the table needs a coordinate; a missing one is an error
+        (``ValueError``). Coordinates are matched against the axis values with
+        a small relative tolerance.
+        """
+        return self._native.lookup(
+            index_1=index_1,
+            index_2=index_2,
+            index_3=index_3,
+            **roles,
+        )
+
+    def value_at(self, row: int, col: int, depth: int | None = None) -> float:
+        """The value at a grid position.
+
+        ``row`` indexes ``index_1``, ``col`` indexes ``index_2`` and ``depth``
+        indexes ``index_3`` — the same meaning the ``row`` / ``col`` / ``depth``
+        columns of :meth:`LibertyDocument.to_polars` have. Raises
+        ``IndexError`` when the position is outside the table.
+        """
+        if depth is None:
+            return self._native.value_at(row, col)
+        return self._native.value_at(row, col, depth)
 
     @property
     def reference_time(self) -> float | None:
@@ -853,12 +1227,15 @@ def parse_file(path: str | Path, **filters: Any) -> LibertyDocument:
 
 
 __all__ = [
+    "ArcKey",
     "BooleanExpression",
     "Cell",
     "Bus",
     "Bundle",
     "BusType",
     "CcsnStage",
+    "CompareEntry",
+    "Comparison",
     "DynamicCurrent",
     "Ff",
     "InternalPower",
@@ -866,11 +1243,13 @@ __all__ = [
     "LeakagePower",
     "LibertyDocument",
     "LibraryIndex",
+    "MinPulseWidth",
     "Pin",
     "PgCurrent",
     "PgPin",
     "SwitchingGroup",
     "TimingArc",
     "TimingTable",
+    "compare",
     "parse_file",
 ]

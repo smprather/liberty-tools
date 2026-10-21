@@ -12,16 +12,21 @@ The current implementation focuses on standard-cell timing, power, and CCS data:
 - cell, pin, and timing arc lookup
 - bus, bundle, and Liberty `type(...)` bus definition lookup
 - 1D, 2D, and 3D timing table extraction to Python rows or Polars
+- lookup of a table value by grid coordinate, by index or by axis role
 - `internal_power` extraction (switching energy in joules)
 - CCS data: `output_current_*` waves, CCSP dynamic current, and CCS-noise
   (CCSN) stage data (`dc_current`, `output_voltage_*`)
 - Boolean-aware `when` filtering
+- uniform attribute access (`get`) and unit-aware scalar accessors
+- writing a parsed document back out, preserving everything you did not change
+- comparing two libraries with arc matching and grid alignment
 - the GIL is released during parsing, so many libraries can be opened in
   parallel threads
 - browser viewer for navigating cells, source text, timing/power tables,
   CCS/CCSN waves, and combinational logic symbols
 
 For LLM/agent-oriented API usage, see [docs/AI_API.md](docs/AI_API.md).
+For the command line tools, see [docs/CLI.md](docs/CLI.md).
 The package also ships `py.typed` and `.pyi` stubs for coding tools.
 
 ## Project Status
@@ -83,7 +88,9 @@ Run the local browser viewer:
 uv run liberty-view dev.lib
 ```
 
-The viewer serves all frontend assets locally, including Plotly. It renders:
+The viewer serves all frontend assets locally, including Plotly. See
+[docs/CLI.md](docs/CLI.md) for the full command line reference of
+`liberty-view` and `liberty-format`. It renders:
 
 - scalar tables as compact tables
 - 1D tables as line plots
@@ -127,6 +134,66 @@ print(table.index_2)
 print(table.values)
 ```
 
+### Flat Value Ordering
+
+A table's `values` list is **flat**, in row-major order over the table's axes:
+`index_1` is the **slowest** axis, `index_3` the **fastest**. For a 2-D table
+with `len(index_1) = 2` and `len(index_2) = 3`:
+
+```text
+values[i * len(index_2) + j]   # i = position on index_1, j = position on index_2
+```
+
+For a 3-D table the same holds with `index_3` varying fastest:
+
+```text
+values[i * len(index_2) * len(index_3) + j * len(index_3) + k]
+```
+
+The long-form dataframes use the same convention: the `row` column indexes
+`index_1`, `col` indexes `index_2` and `depth` indexes `index_3`.
+
+### Looking Up A Value
+
+Use `lookup()` instead of re-deriving the flat index. Give the coordinate on
+each axis either by index or by the axis's physical variable:
+
+```python
+table.lookup(index_1=0.108, index_2=0.0966)   # -> float | None
+table.lookup(load=0.108, transition=0.0966)    # by axis role
+table.value_at(row=0, col=1)                   # by grid position
+```
+
+`lookup()` returns `None` when the point is not on the table's grid (it never
+clamps and never raises for an off-grid point). Every axis of the table needs
+a coordinate; a missing one raises `ValueError`.
+
+### Axis Roles
+
+Which axis is the load and which is the transition is a property of the
+table's lookup template, and it differs between libraries. Ask the table:
+
+```python
+table.axis_roles()      # ["input_net_transition", "total_output_net_capacitance"]
+table.axis_role(1)      # "input_net_transition"
+table.index_1_variable  # "input_net_transition"
+table.template          # "delay_template_7x7_x1"
+```
+
+The same information is on the document:
+
+```python
+doc.templates()["delay_template_7x7_x1"]
+# ["input_net_transition", "total_output_net_capacitance", None]
+```
+
+Do not assume a fixed axis order: one library stores `index_1 =
+input_net_transition`, another stores `index_1 =
+total_output_net_capacitance`. Using the wrong one does not raise — it
+silently reads the wrong cell.
+
+### Extracting Rows
+
 Extract timing table rows across the document:
 
 ```python
@@ -155,9 +222,140 @@ The timing dataframe uses long-form rows with columns such as:
 - `table`
 - `index_1`
 - `index_2`
+- `index_3`
 - `row`
 - `col`
+- `depth`
 - `value`
+
+## Scalar Attributes And Units
+
+Every group exposes its simple and complex attributes as `(name, value)`
+string pairs, and the same `get()` accessor on the document, the cell and the
+pin:
+
+```python
+doc.get("default_max_transition")     # -> str | None
+cell.get("cell_leakage_power")        # -> str | None
+pin.get("capacitance")                # -> str | None
+```
+
+Typed accessors return numbers instead, in the unit the library declares:
+
+```python
+pin.capacitance            # float | None, in the library's capacitive_load_unit
+pin.capacitance_farads     # float | None, in farads
+pin.max_transition         # float | None, in the library's time_unit
+pin.max_transition_seconds # float | None, in seconds
+cell.cell_leakage_power    # float | None, in the library's power unit
+cell.cell_leakage_power_watts
+doc.nom_voltage            # float | None, in the library's voltage_unit
+```
+
+The plain name carries the library's unit; the suffixed name carries SI.
+Which unit the library uses is on the document:
+
+```python
+doc.time_unit              # "1ns"
+doc.capacitive_load_unit   # "ff"
+doc.capacitive_load_multiplier  # 1.0
+doc.voltage_unit           # "1V"
+doc.current_unit           # "1mA"
+doc.leakage_power_unit     # "1pW"
+doc.energy_unit_joules()   # the SI scale of internal_power energy values
+```
+
+## Minimum Clock Pulse Width
+
+Two conventions express the same quantity, and a file may use either:
+
+```text
+pin (CLK) {
+  min_pulse_width_high : 0.09117187499999997;   # attribute form
+  min_pulse_width_low  : 0.7999999999999999;
+}
+```
+
+```text
+pin (CLK) {
+  timing () {
+    related_pin : "CLK";
+    timing_type : min_pulse_width;              # timing group form
+    rise_constraint (...) ;
+    fall_constraint (...) ;
+  }
+}
+```
+
+`min_pulse_width()` normalizes both:
+
+```python
+width = cell.pin("CLK").min_pulse_width()
+if width is not None:
+    print(width.high, width.low, width.source)   # source: "attribute" | "timing_group"
+```
+
+The attribute form wins when a file uses both. For the timing group form the
+reported number is the largest value of the constraint table — the tightest
+limit over the tabulated clock transitions. Note that the two forms measure
+slightly different things: the attribute form is the minimum *high/low phase*
+width, the timing group form the minimum width *per clock transition*. The
+`source` field says which one you are looking at.
+
+## Writing A Liberty File
+
+A parsed document can be written back out. The write is *surgical*: the
+original text is kept byte for byte and only the attributes you changed are
+rewritten, so comments, spacing and groups this library does not model all
+survive.
+
+```python
+doc = lt.parse_file("cell.lib")
+doc.cell("mycell").set_attribute("area", "59.8752")
+doc.cell("mycell").pin("A").set_attribute("capacitance", 0.0044)
+
+doc.write("out.lib")       # a .gz path is written gzip-compressed
+text = doc.to_string()     # the same text as a string
+```
+
+`set_attribute()` adds the attribute when it is not there yet. Setting
+`area` also updates `cell.area`. Writing refuses to touch a file whose
+source changed since it was parsed.
+
+## Comparing Two Libraries
+
+`compare()` matches the timing arcs of two documents, aligns their grids by
+axis role and reports the differences on the common points:
+
+```python
+a = lt.parse_file("ours.lib")
+b = lt.parse_file("pdk.lib")
+
+diff = lt.compare(a, b, cells=["mycell"])
+for entry in diff.entries:
+    print(entry.arc, entry.table, entry.index_1, entry.index_2,
+          entry.value_a, entry.value_b, entry.delta)
+
+print(diff.summary())
+print(diff.only_in_a)   # arcs that only exist in the first document
+print(diff.only_in_b)
+```
+
+Arcs are matched by pin, related pin and timing type; within such a group
+the `when` conditions are matched by logical equivalence, so `"A & B"` matches
+`"B & A"`. Tables are matched by name and their grids are aligned by axis
+role, so the load axis of one library is compared against the load axis of
+the other even when the two files store them in a different order.
+
+Points that exist in only one grid are reported with the missing side left as
+`None`. Tables whose grids have a different number of axes cannot be
+intersected or interpolated; they are reported in `diff.shape_mismatches`.
+With `interpolate=True` the second document is interpolated onto the first
+document's grid instead:
+
+```python
+diff = lt.compare(a, b, cell="mycell", interpolate=True)
+```
 
 ## Boolean `when` Filtering
 
@@ -197,7 +395,9 @@ for the requested cells.
 ## Current API
 
 ```python
+```python
 lt.parse_file(path, cells=None) -> LibertyDocument
+lt.compare(a, b, cells=None, cell=None, interpolate=False) -> Comparison
 
 doc.library_name
 doc.cells()
@@ -205,6 +405,19 @@ doc.cell(name)
 doc.timing_tables(...)
 doc.internal_power_tables(...)
 doc.to_polars(kind="timing", ...)   # or kind="power"
+doc.get(key)                        # library attribute value
+doc.templates()                     # template name -> axis variable names
+doc.operating_conditions()
+doc.default_max_transition
+doc.default_fanout_load
+doc.nom_voltage
+doc.nom_temperature
+doc.capacitive_load_unit
+doc.capacitive_load_multiplier
+doc.leakage_power_unit
+doc.energy_unit_joules()
+doc.to_string()                     # the Liberty text, with edits applied
+doc.write(path)                     # write it out
 
 cell.name
 cell.area
@@ -214,6 +427,14 @@ cell.buses()
 cell.bus(name)
 cell.bundles()
 cell.bundle(name)
+cell.get(key)
+cell.set_attribute(key, value)
+cell.set_area(value)
+cell.cell_leakage_power
+cell.cell_leakage_power_watts
+cell.cell_footprint
+cell.dont_touch
+cell.dont_use
 
 bus.name
 bus.direction
@@ -237,6 +458,17 @@ pin.direction
 pin.function
 pin.timing_arcs(related_pin=None, timing_type=None, when=None)
 pin.internal_power()
+pin.get(key)
+pin.set_attribute(key, value)
+pin.capacitance
+pin.capacitance_farads
+pin.rise_capacitance
+pin.fall_capacitance
+pin.max_transition
+pin.max_transition_seconds
+pin.min_pulse_width_high
+pin.min_pulse_width_low
+pin.min_pulse_width()               # both forms of the minimum pulse width
 
 arc.related_pin
 arc.timing_type
@@ -249,7 +481,13 @@ table.name
 table.index_1
 table.index_2
 table.index_3
-table.values
+table.values                        # flat, row-major, index_1 slowest
+table.template
+table.axis_roles()
+table.axis_role(n)
+table.index_1_variable
+table.lookup(index_1=..., index_2=..., load=..., transition=...)
+table.value_at(row, col, depth=None)
 table.to_polars()
 ```
 
