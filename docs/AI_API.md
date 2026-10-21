@@ -458,6 +458,10 @@ diff.shape_mismatches # tables whose grids have a different number of axes
 diff.to_polars()      # the compared points as a dataframe
 ```
 
+The comparison API lives in the module `liberty_tools.comparison`. The
+package re-exports it, so `lt.compare` is the *function* and
+`liberty_tools.comparison.Comparison` is the class.
+
 How the matching works:
 
 - Arcs are matched by pin, related pin and timing type. Within such a group

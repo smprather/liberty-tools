@@ -341,6 +341,10 @@ print(diff.only_in_a)   # arcs that only exist in the first document
 print(diff.only_in_b)
 ```
 
+The comparison API lives in the module `liberty_tools.comparison`; the package
+re-exports it, so `lt.compare` is the *function* and
+`liberty_tools.comparison.Comparison` is the class.
+
 Arcs are matched by pin, related pin and timing type; within such a group
 the `when` conditions are matched by logical equivalence, so `"A & B"` matches
 `"B & A"`. Tables are matched by name and their grids are aligned by axis

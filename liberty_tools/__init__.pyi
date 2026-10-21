@@ -1,7 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterator, Literal, Sequence
+from typing import Any, Iterator, Literal
+
+# The comparison API lives in its own module; the package re-exports it so
+# that `liberty_tools.compare` stays the *function* and the module stays
+# importable as `liberty_tools.comparison`. Re-exporting (instead of
+# redeclaring) keeps one nominal type per class.
+from .comparison import (
+    ArcKey as ArcKey,
+    AxisRoleMismatch as AxisRoleMismatch,
+    CompareEntry as CompareEntry,
+    Comparison as Comparison,
+    MalformedTable as MalformedTable,
+    UnitMismatch as UnitMismatch,
+    compare as compare,
+)
 
 
 class LibertyDocument:
@@ -430,150 +444,6 @@ class MinPulseWidth:
     source: str
     def __init__(self, high: float | None, low: float | None, source: str) -> None: ...
     def __iter__(self) -> Iterator[float | None]: ...
-
-
-class ArcKey:
-    cell: str
-    pin: str
-    related_pin: str | None
-    timing_type: str | None
-    when: str | None
-    timing_sense: str | None
-    def __init__(
-        self,
-        cell: str,
-        pin: str,
-        related_pin: str | None,
-        timing_type: str | None,
-        when: str | None,
-        timing_sense: str | None = ...,
-    ) -> None: ...
-    def __str__(self) -> str: ...
-
-
-class CompareEntry:
-    cell: str
-    pin: str
-    related_pin: str | None
-    timing_type: str | None
-    when: str | None
-    table: str
-    index_1: float | None
-    index_2: float | None
-    index_3: float | None
-    axis_1: str | None
-    axis_2: str | None
-    axis_3: str | None
-    value_a: float | None
-    value_b: float | None
-    timing_sense: str | None
-    def __init__(
-        self,
-        cell: str,
-        pin: str,
-        related_pin: str | None,
-        timing_type: str | None,
-        when: str | None,
-        table: str,
-        index_1: float | None,
-        index_2: float | None,
-        index_3: float | None,
-        axis_1: str | None,
-        axis_2: str | None,
-        axis_3: str | None,
-        value_a: float | None,
-        value_b: float | None,
-        *,
-        timing_sense: str | None = ...,
-    ) -> None: ...
-    @property
-    def arc(self) -> str: ...
-    @property
-    def arc_key(self) -> ArcKey: ...
-    @property
-    def delta(self) -> float | None: ...
-    @property
-    def relative_delta(self) -> float | None: ...
-    @property
-    def matched(self) -> bool: ...
-
-
-class UnitMismatch:
-    cell: str
-    pin: str
-    table: str
-    dimension: str
-    unit_a: str | None
-    unit_b: str | None
-
-
-class AxisRoleMismatch:
-    cell: str
-    pin: str
-    table: str
-    roles_a: tuple[str | None, ...]
-    roles_b: tuple[str | None, ...]
-
-
-class MalformedTable:
-    cell: str
-    pin: str
-    table: str
-    expected_values: int
-    actual_values: int
-
-
-class Comparison:
-    entries: list[CompareEntry]
-    only_in_a: list[ArcKey]
-    only_in_b: list[ArcKey]
-    only_in_a_tables: list[tuple[ArcKey, str]]
-    only_in_b_tables: list[tuple[ArcKey, str]]
-    shape_mismatches: list[tuple[ArcKey, str, int, int]]
-    unit_mismatches: list[UnitMismatch]
-    axis_role_mismatches: list[AxisRoleMismatch]
-    malformed_tables: list[MalformedTable]
-    duplicate_arcs: list[ArcKey]
-    def __init__(
-        self,
-        entries: list[CompareEntry] = ...,
-        only_in_a: list[ArcKey] = ...,
-        only_in_b: list[ArcKey] = ...,
-        only_in_a_tables: list[tuple[ArcKey, str]] = ...,
-        only_in_b_tables: list[tuple[ArcKey, str]] = ...,
-        shape_mismatches: list[tuple[ArcKey, str, int, int]] = ...,
-        unit_mismatches: list[UnitMismatch] = ...,
-        axis_role_mismatches: list[AxisRoleMismatch] = ...,
-        malformed_tables: list[MalformedTable] = ...,
-        duplicate_arcs: list[ArcKey] = ...,
-    ) -> None: ...
-    def __len__(self) -> int: ...
-    def __iter__(self) -> Iterator[CompareEntry]: ...
-    @property
-    def matched(self) -> list[CompareEntry]: ...
-    @property
-    def mismatched(self) -> list[CompareEntry]: ...
-    @property
-    def unmatched(self) -> list[CompareEntry]: ...
-    @property
-    def has_differences(self) -> bool: ...
-    def max_abs_delta(self) -> float | None: ...
-    def summary(self) -> dict[str, Any]: ...
-    def to_polars(self) -> Any: ...
-
-
-def compare(
-    a: LibertyDocument,
-    b: LibertyDocument,
-    *,
-    cells: Sequence[str] | None = None,
-    cell: str | None = None,
-    pin: str | None = None,
-    table: str | None = None,
-    interpolate: bool = False,
-    grid: dict[str, Sequence[float]] | None = None,
-    tolerance: float = ...,
-) -> Comparison: ...
 
 
 def _axis_role_matches(role: str, keyword: str) -> bool: ...

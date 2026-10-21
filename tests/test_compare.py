@@ -1054,6 +1054,16 @@ def test_to_polars_of_an_empty_comparison_has_the_documented_columns(
     ]
 
 
+def test_the_compare_module_is_not_shadowed_by_the_function():
+    import liberty_tools.comparison as comparison
+
+    # The module is importable under its own name and holds the classes ...
+    assert comparison.Comparison is lt.Comparison
+    # ... while the package attribute stays the function of the same name.
+    assert callable(lt.compare)
+    assert lt.compare is comparison.compare
+
+
 def test_the_grid_accepts_the_lookup_shorthands(tmp_path: Path):
     a = lt.parse_file(_write(tmp_path, "a.lib", GRID_LIBRARY))
     b = lt.parse_file(_write(tmp_path, "b.lib", GRID_LIBRARY_B))

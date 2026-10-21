@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from . import _native
-from .compare import (
+from .comparison import (
     ArcKey,
     AxisRoleMismatch,
     CompareEntry,
