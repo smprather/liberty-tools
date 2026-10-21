@@ -1948,7 +1948,29 @@ impl TimingTable {
     /// The value at a grid position: `row` indexes `index_1`, `col` indexes
     /// `index_2`, `depth` indexes `index_3`.
     #[pyo3(signature = (row, col, depth=None))]
-    fn value_at(&self, row: usize, col: usize, depth: Option<usize>) -> PyResult<f64> {
+    fn value_at(&self, row: i64, col: i64, depth: Option<i64>) -> PyResult<f64> {
+        // A negative position is out of range like any other one, so it is
+        // reported as an IndexError and not as a conversion overflow.
+        if row < 0 {
+            return Err(PyIndexError::new_err(format!(
+                "row {row} is out of range (the table has {} rows)",
+                self.index_1.len()
+            )));
+        }
+        if col < 0 {
+            return Err(PyIndexError::new_err(format!(
+                "col {col} is out of range (the table has {} columns)",
+                self.index_2.len()
+            )));
+        }
+        let depth = depth.unwrap_or(0);
+        if depth < 0 {
+            return Err(PyIndexError::new_err(format!(
+                "depth {depth} is out of range (the table has {} levels)",
+                self.index_3.len()
+            )));
+        }
+        let (row, col, depth) = (row as usize, col as usize, depth as usize);
         if !self.index_1.is_empty() && row >= self.index_1.len() {
             return Err(PyIndexError::new_err(format!(
                 "row {row} is out of range (the table has {} rows)",
@@ -1967,7 +1989,6 @@ impl TimingTable {
                 self.index_2.len()
             )));
         }
-        let depth = depth.unwrap_or(0);
         if self.index_3.is_empty() {
             if depth != 0 {
                 return Err(PyIndexError::new_err(
@@ -4885,20 +4906,39 @@ impl Cell {
 }
 
 impl Pin {
+    /// Mirror an attribute change into the typed field the getters read, so
+    /// that `direction`, `function`, `three_state` and `power_down_function`
+    /// (and the `*_expr` accessors built on them) see the edit right away —
+    /// the way `Cell` mirrors `area`.
+    fn mirror_typed_field(&mut self, key: &str, value: &str) {
+        let value = Some(value.to_string());
+        match key {
+            "direction" => self.direction = value,
+            "function" => self.function = value,
+            "three_state" => self.three_state = value,
+            "power_down_function" => self.power_down_function = value,
+            _ => {}
+        }
+    }
+
     /// Apply the edits already recorded for this pin to a fresh copy.
     fn apply_edits(&mut self) {
-        let (Some(edits), Some(cell)) = (&self.edits, &self.cell_name) else {
+        // The edit log is cloned (an `Arc` bump, not a copy) so that the lock
+        // guard does not borrow the pin and the typed fields can be updated
+        // below.
+        let Some(edits) = self.edits.clone() else {
             return;
         };
         let Ok(edits) = edits.lock() else {
             return;
         };
         for edit in edits.iter() {
-            if edit.cell == *cell
+            if self.cell_name.as_deref() == Some(edit.cell.as_str())
                 && edit.pin.as_deref() == Some(self.name.as_str())
                 && edit.container == self.container
             {
                 set_attribute_in(&mut self.attributes, &edit.key, &edit.value);
+                self.mirror_typed_field(&edit.key, &edit.value);
             }
         }
     }
@@ -4906,7 +4946,7 @@ impl Pin {
     /// Apply an attribute change to the in-memory model and record it on the
     /// owning document's edit log.
     fn set_attribute_text(&mut self, key: &str, text: &str) -> PyResult<()> {
-        let (Some(edits), Some(cell)) = (&self.edits, &self.cell_name) else {
+        let Some(edits) = self.edits.clone() else {
             // Without a document there is nowhere to record the change, so the
             // edit would be silently lost when the file is written. Refuse.
             return Err(PyRuntimeError::new_err(format!(
@@ -4915,12 +4955,20 @@ impl Pin {
                 self.name
             )));
         };
+        let Some(cell) = self.cell_name.clone() else {
+            return Err(PyRuntimeError::new_err(format!(
+                "pin {:?} is not attached to a document; attribute edits cannot be \
+                 written back",
+                self.name
+            )));
+        };
         set_attribute_in(&mut self.attributes, key, text);
+        self.mirror_typed_field(key, text);
         let mut edits = edits
             .lock()
             .map_err(|_| PyRuntimeError::new_err("document edit log is poisoned"))?;
         edits.push(AttrEdit {
-            cell: cell.clone(),
+            cell,
             pin: Some(self.name.clone()),
             container: self.container.clone(),
             key: key.to_string(),
@@ -5106,17 +5154,41 @@ fn scan_source_groups(text: &str) -> PyResult<(Vec<SourceGroup>, Vec<SourceAttri
     Ok((groups, attributes))
 }
 
-/// Render an attribute value: quote it when it is empty or contains spaces.
+/// Render an attribute value so that reading the file back yields exactly
+/// this value.
+///
+/// A value is written unquoted only when it cannot confuse the lexer: it must
+/// be non-empty and consist of letters, digits and `_`, `+`, `.`, `-` only.
+/// Every other value is written as a quoted string, where `\` becomes `\\` and
+/// `"` becomes `\"` — the inverse of what the lexer's `read_quoted` does.
+/// Quoting by a safe pattern rather than by a blacklist of dangerous
+/// characters keeps the rule closed: a value with a `:`, a bracket or any
+/// other punctuation in it still parses back to itself.
 fn render_attribute_value(value: &str) -> String {
-    if value.is_empty() || value.contains(char::is_whitespace) {
-        format!("\"{value}\"")
-    } else {
-        value.to_string()
+    let is_plain = !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '+' | '.' | '-'));
+    if is_plain {
+        return value.to_string();
     }
+    let mut rendered = String::with_capacity(value.len() + 2);
+    rendered.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => rendered.push_str("\\\\"),
+            '"' => rendered.push_str("\\\""),
+            _ => rendered.push(ch),
+        }
+    }
+    rendered.push('"');
+    rendered
 }
 
 /// Render the arguments of a complex attribute, keeping it complex: a value of
-/// "0.1, 0.2" becomes `(0.1, 0.2)`, not a single quoted string.
+/// "0.1, 0.2" becomes `(0.1, 0.2)`, not a single quoted string. Each part is
+/// quoted with the same rule as a simple value, so that the arguments parse
+/// back to the same parts.
 fn render_complex_attribute_value(value: &str) -> String {
     let parts: Vec<String> = value
         .split(',')

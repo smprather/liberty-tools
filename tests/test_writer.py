@@ -107,6 +107,99 @@ def test_a_pin_attribute_can_be_changed(liberty):
     assert "      capacitance : 0.5;" not in written
 
 
+def test_setting_a_pin_attribute_updates_the_typed_direction_and_function(
+    tmp_path: Path,
+):
+    # The typed getters and `function_expr()` must see the edit right away,
+    # not only after the file has been written and re-parsed.
+    source = (
+        "library (typed) {\n"
+        "  cell (u1) {\n"
+        "    pin (a) {\n"
+        "      direction : input;\n"
+        "      function : \"A\";\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    path = tmp_path / "typed.lib"
+    path.write_text(source, encoding="utf-8")
+
+    doc = lt.parse_file(path)
+    pin = doc.cell("u1").pin("a")
+
+    pin.set_attribute("direction", "output")
+    assert pin.direction == "output"
+
+    pin.set_attribute("function", "A & !B")
+    assert pin.function == "A & !B"
+    expr = pin.function_expr()
+    assert expr is not None
+    assert expr.eval({"A": True, "B": False}) is True
+    assert expr.eval({"A": True, "B": True}) is False
+
+    pin.set_attribute("three_state", "A & !B")
+    assert pin.three_state == "A & !B"
+
+    pin.set_attribute("power_down_function", "B")
+    assert pin.power_down_function == "B"
+
+    # A fresh handle sees the change too.
+    assert doc.cell("u1").pin("a").direction == "output"
+    assert doc.cell("u1").pin("a").function == "A & !B"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        'A "B" C',
+        "a;b",
+        "A:B",
+        "A[0]",
+        "A{}",
+        "'A",
+        "A&B",
+        "A?B",
+    ],
+)
+def test_a_quoted_value_re_parses_to_the_same_value(value, tmp_path: Path):
+    # A value with a character the lexer treats specially in it has to be
+    # written quoted and escaped, so that the file parses back to exactly the
+    # value that was set.
+    source = (
+        "library (quoted) {\n"
+        "  cell (u1) {\n"
+        "    pin (a) {\n"
+        "      direction : input;\n"
+        "      function : \"A\";\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    path = tmp_path / "quoted.lib"
+    path.write_text(source, encoding="utf-8")
+
+    doc = lt.parse_file(path)
+    doc.cell("u1").pin("a").set_attribute("function", value)
+
+    out = tmp_path / "out.lib"
+    doc.write(out)
+
+    reparsed = lt.parse_file(out)
+    assert reparsed.cell("u1").pin("a").function == value
+
+
+def test_a_plain_value_is_written_unquoted(liberty):
+    # A value that cannot confuse the lexer keeps the usual shape of the
+    # file: it is not quoted.
+    doc = lt.parse_file(liberty)
+    doc.cell("u2").set_attribute("area", "1.0")
+
+    written = doc.to_string()
+    assert "    area : 1.0;" in written
+    assert 'area : "1.0";' not in written
+
+
 def test_written_document_parses_back_with_the_new_values(liberty, tmp_path: Path):
     doc = lt.parse_file(liberty)
     doc.cell("u1").set_attribute("area", "59.8752")

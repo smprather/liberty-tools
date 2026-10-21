@@ -73,6 +73,17 @@ def test_value_at_rejects_out_of_range_positions(doc):
         table.value_at(0, 3)
 
 
+def test_value_at_rejects_negative_positions(doc):
+    table = _table(doc, "cell_rise")
+
+    with pytest.raises(IndexError):
+        table.value_at(-1, 0)
+    with pytest.raises(IndexError):
+        table.value_at(0, -1)
+    with pytest.raises(IndexError):
+        table.value_at(0, 0, -1)
+
+
 def test_lookup_by_index_value(doc):
     table = _table(doc, "cell_rise")
 
