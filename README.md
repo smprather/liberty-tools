@@ -395,7 +395,6 @@ for the requested cells.
 ## Current API
 
 ```python
-```python
 lt.parse_file(path, cells=None) -> LibertyDocument
 lt.compare(a, b, cells=None, cell=None, interpolate=False) -> Comparison
 
