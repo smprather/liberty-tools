@@ -339,6 +339,168 @@ def test_the_last_edit_of_an_attribute_wins(sequence, expected, tmp_path: Path):
     assert reparsed.cell("u1").get("dont_touch") == "true"
 
 
+def test_a_bracketed_pin_name_is_patched(tmp_path: Path):
+    # `A[0]` is one name, not the name `A` with an index: the writer has to
+    # find the pin group whose argument is exactly "A[0]".
+    source = (
+        "library (brackets) {\n"
+        "  type (B) {\n"
+        "    bit_width : 1;\n"
+        "    bit_from : 0;\n"
+        "    bit_to : 0;\n"
+        "    downto : true;\n"
+        "  }\n"
+        "  cell (u1) {\n"
+        "    bus (A) {\n"
+        "      bus_type : B;\n"
+        "      pin (A[0]) {\n"
+        "        direction : input;\n"
+        "        capacitance : 0.001;\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    path = tmp_path / "brackets.lib"
+    path.write_text(source, encoding="utf-8")
+
+    doc = lt.parse_file(path)
+    doc.cell("u1").bus("A").pin("A[0]").set_attribute("capacitance", "0.5")
+
+    written = doc.to_string()
+    assert "pin (A[0])" in written
+    assert "        capacitance : 0.5;" in written
+    assert "        capacitance : 0.001;" not in written
+
+    out = tmp_path / "out.lib"
+    doc.write(out)
+    reparsed = lt.parse_file(out)
+    assert reparsed.cell("u1").bus("A").pin("A[0]").capacitance == 0.5
+
+
+def test_duplicate_cell_names_only_patch_the_first_cell(tmp_path: Path):
+    # Two cells with the same name: the edit addresses the first one, so
+    # only the first one may be rewritten.
+    source = (
+        "library (dupes) {\n"
+        "  cell (u1) {\n"
+        "    area : 1.0;\n"
+        "  }\n"
+        "  cell (u1) {\n"
+        "    area : 2.0;\n"
+        "  }\n"
+        "}\n"
+    )
+    path = tmp_path / "dupes.lib"
+    path.write_text(source, encoding="utf-8")
+
+    doc = lt.parse_file(path)
+    doc.cell("u1").set_attribute("area", "9.0")
+
+    written = doc.to_string()
+    assert written.count("area : 9.0;") == 1
+    assert written.count("area : 2.0;") == 1
+    assert "area : 1.0;" not in written
+
+    out = tmp_path / "out.lib"
+    doc.write(out)
+    reparsed = lt.parse_file(out)
+    assert reparsed.cell("u1").area == 9.0
+
+
+def test_duplicate_pin_names_in_different_buses_patch_the_addressed_one(tmp_path: Path):
+    # The same pin name in two buses: the edit addresses the one in bus B.
+    source = (
+        "library (duppins) {\n"
+        "  cell (u1) {\n"
+        "    bus (A) {\n"
+        "      pin (P) {\n"
+        "        capacitance : 0.001;\n"
+        "      }\n"
+        "    }\n"
+        "    bus (B) {\n"
+        "      pin (P) {\n"
+        "        capacitance : 0.002;\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    path = tmp_path / "duppins.lib"
+    path.write_text(source, encoding="utf-8")
+
+    doc = lt.parse_file(path)
+    doc.cell("u1").bus("B").pin("P").set_attribute("capacitance", "9.0")
+
+    written = doc.to_string()
+    assert "        capacitance : 0.001;" in written
+    assert "        capacitance : 9.0;" in written
+    assert "        capacitance : 0.002;" not in written
+
+    out = tmp_path / "out.lib"
+    doc.write(out)
+    reparsed = lt.parse_file(out)
+    assert reparsed.cell("u1").bus("A").pin("P").capacitance == 0.001
+    assert reparsed.cell("u1").bus("B").pin("P").capacitance == 9.0
+
+
+def test_an_ambiguous_pin_name_is_refused(tmp_path: Path):
+    # The same pin name at the cell level and inside a bus: without a
+    # container the writer cannot tell them apart, so it refuses instead of
+    # patching an arbitrary one.
+    source = (
+        "library (ambiguous) {\n"
+        "  cell (u1) {\n"
+        "    pin (P) {\n"
+        "      capacitance : 0.001;\n"
+        "    }\n"
+        "    bus (A) {\n"
+        "      pin (P) {\n"
+        "        capacitance : 0.002;\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    path = tmp_path / "ambiguous.lib"
+    path.write_text(source, encoding="utf-8")
+
+    doc = lt.parse_file(path)
+    doc.cell("u1").pin("P").set_attribute("capacitance", "9.0")
+
+    with pytest.raises(ValueError, match="pins named"):
+        doc.to_string()
+
+
+def test_a_bundle_pin_is_patched_in_its_own_bundle(tmp_path: Path):
+    source = (
+        "library (bundles) {\n"
+        "  cell (u1) {\n"
+        "    bundle (A) {\n"
+        "      pin (P) {\n"
+        "        capacitance : 0.001;\n"
+        "      }\n"
+        "    }\n"
+        "    bundle (B) {\n"
+        "      pin (P) {\n"
+        "        capacitance : 0.002;\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    path = tmp_path / "bundles.lib"
+    path.write_text(source, encoding="utf-8")
+
+    doc = lt.parse_file(path)
+    doc.cell("u1").bundle("B").pin("P").set_attribute("capacitance", "9.0")
+
+    written = doc.to_string()
+    assert "        capacitance : 0.001;" in written
+    assert "        capacitance : 9.0;" in written
+    assert "        capacitance : 0.002;" not in written
+
+
 def test_editing_a_detached_cell_is_refused(liberty):
     # A cell from a LibraryIndex has no document to write back to, so the
     # edit would be lost. Refuse it instead of losing it silently.

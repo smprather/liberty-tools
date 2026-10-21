@@ -53,6 +53,32 @@ impl UnitContext {
     }
 }
 
+/// The kind of group that owns a pin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ContainerKind {
+    Bus,
+    Bundle,
+}
+
+impl ContainerKind {
+    /// The Liberty keyword of the group this kind stands for.
+    fn keyword(&self) -> &'static str {
+        match self {
+            ContainerKind::Bus => "bus",
+            ContainerKind::Bundle => "bundle",
+        }
+    }
+}
+
+/// What makes an edited attribute unique: the cell, the pin, the container
+/// that owns the pin and the attribute's key.
+type EditKey = (
+    String,
+    Option<String>,
+    Option<(ContainerKind, String)>,
+    String,
+);
+
 /// A pending attribute edit recorded by `Cell::set_attribute` /
 /// `Pin::set_attribute`. The writer replays these against the original
 /// source text.
@@ -61,6 +87,8 @@ struct AttrEdit {
     cell: String,
     /// `None` for a cell-level attribute, `Some(pin)` for a pin attribute.
     pin: Option<String>,
+    /// The bus or bundle that owns the pin, `None` for a cell-level pin.
+    container: Option<(ContainerKind, String)>,
     key: String,
     value: String,
 }
@@ -155,6 +183,9 @@ struct Pin {
     edits: Option<Arc<Mutex<Vec<AttrEdit>>>>,
     /// Name of the owning cell (needed to locate a pin in the source).
     cell_name: Option<String>,
+    /// The bus or bundle that owns this pin, `None` for a cell-level pin.
+    /// The writer needs it to tell two pins of the same name apart.
+    container: Option<(ContainerKind, String)>,
 }
 
 /// An `internal_power` group. Despite the Liberty name, the table values are
@@ -661,6 +692,7 @@ impl From<PinData> for Pin {
             units: value.units,
             edits: None,
             cell_name: None,
+            container: None,
         }
     }
 }
@@ -1041,9 +1073,14 @@ impl Document {
             // Walk the log backwards and keep the first occurrence of every
             // key; that is the last edit of the attribute. Reversing afterwards
             // puts the survivors back in the order the edits were made in.
-            let mut seen: HashSet<(String, Option<String>, String)> = HashSet::new();
+            let mut seen: HashSet<EditKey> = HashSet::new();
             for edit in edits.iter().rev() {
-                let key = (edit.cell.clone(), edit.pin.clone(), edit.key.clone());
+                let key = (
+                    edit.cell.clone(),
+                    edit.pin.clone(),
+                    edit.container.clone(),
+                    edit.key.clone(),
+                );
                 if seen.insert(key) {
                     chosen.push(edit);
                 }
@@ -1054,22 +1091,24 @@ impl Document {
         for edit in chosen {
             by_cell.entry(edit.cell.as_str()).or_default().push(edit);
         }
-        // Every edited cell must have a span in the source, otherwise the
-        // edit would be dropped without a trace.
+        // Patch only the cell that `Document::cell` resolves to — the first
+        // cell of that name in the source. A second cell with the same name
+        // is a different cell and must not be rewritten.
+        let mut spans: Vec<&(String, usize, usize)> = Vec::new();
         for cell_name in by_cell.keys() {
-            if !self.cell_spans.iter().any(|(name, _, _)| name == cell_name) {
-                return Err(PyValueError::new_err(format!(
-                    "cell {cell_name:?} is not in the source text; its edits cannot be \\
-                     written back"
-                )));
-            }
+            let span = self
+                .cell_spans
+                .iter()
+                .find(|(name, _, _)| name.as_str() == *cell_name)
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "cell {cell_name:?} is not in the source text; its edits cannot be \
+                         written back"
+                    ))
+                })?;
+            spans.push(span);
         }
         // Patch from the last cell backwards so earlier offsets stay valid.
-        let mut spans: Vec<&(String, usize, usize)> = self
-            .cell_spans
-            .iter()
-            .filter(|(name, _, _)| by_cell.contains_key(name.as_str()))
-            .collect();
         spans.sort_by_key(|(_, start, _)| std::cmp::Reverse(*start));
         let mut text = source;
         for (name, start, end) in spans {
@@ -1613,6 +1652,7 @@ impl Bus {
                 let mut pin = Pin::from(data);
                 pin.edits = self.edits.clone();
                 pin.cell_name = self.cell_name.clone();
+                pin.container = Some((ContainerKind::Bus, self.name.clone()));
                 pin.apply_edits();
                 pin
             })
@@ -1650,6 +1690,7 @@ impl Bundle {
                 let mut pin = Pin::from(data);
                 pin.edits = self.edits.clone();
                 pin.cell_name = self.cell_name.clone();
+                pin.container = Some((ContainerKind::Bundle, self.name.clone()));
                 pin.apply_edits();
                 pin
             })
@@ -4468,15 +4509,15 @@ impl Parser {
     }
 
     fn read_value(&mut self) -> Result<String, ParseError> {
-        let mut value = self.take_word()?;
-        if self.consume_symbol(b'[')? {
+        let base = self.take_word()?;
+        let index = if self.consume_symbol(b'[')? {
             let sel = self.take_word()?;
             self.expect_symbol(b']')?;
-            value.push('[');
-            value.push_str(&sel);
-            value.push(']');
-        }
-        Ok(value)
+            Some(sel)
+        } else {
+            None
+        };
+        Ok(indexed_value(&base, index.as_deref()))
     }
 
     fn read_simple_attribute_value(&mut self) -> Result<String, ParseError> {
@@ -4580,6 +4621,16 @@ fn is_symbol(byte: u8) -> bool {
         byte,
         b',' | b'{' | b'}' | b'(' | b')' | b'[' | b']' | b';' | b':'
     )
+}
+
+/// Reassemble a value that carries an index suffix. The lexer splits
+/// `A[0]` into the words `A` and `0` and the symbols `[` and `]`; the value
+/// is put back together the same way everywhere.
+fn indexed_value(base: &str, index: Option<&str>) -> String {
+    match index {
+        Some(index) => format!("{base}[{index}]"),
+        None => base.to_string(),
+    }
 }
 
 fn is_timing_table_group(name: &str) -> bool {
@@ -4825,6 +4876,7 @@ impl Cell {
         edits.push(AttrEdit {
             cell: self.name.clone(),
             pin: None,
+            container: None,
             key: key.to_string(),
             value: text.to_string(),
         });
@@ -4842,7 +4894,10 @@ impl Pin {
             return;
         };
         for edit in edits.iter() {
-            if edit.cell == *cell && edit.pin.as_deref() == Some(self.name.as_str()) {
+            if edit.cell == *cell
+                && edit.pin.as_deref() == Some(self.name.as_str())
+                && edit.container == self.container
+            {
                 set_attribute_in(&mut self.attributes, &edit.key, &edit.value);
             }
         }
@@ -4867,6 +4922,7 @@ impl Pin {
         edits.push(AttrEdit {
             cell: cell.clone(),
             pin: Some(self.name.clone()),
+            container: self.container.clone(),
             key: key.to_string(),
             value: text.to_string(),
         });
@@ -4909,8 +4965,27 @@ fn attribute_value_text(value: &Bound<'_, PyAny>) -> PyResult<String> {
 struct SourceGroup {
     keyword: String,
     arg: Option<String>,
+    /// Byte offset of the group's header (its keyword).
+    start: usize,
     /// Byte offset of the group's closing brace.
     close: usize,
+}
+
+/// The first argument of a group header, reassembled the way the parser does
+/// it: `A[0]` is lexed as the words `A` and `0` and the symbols `[` and `]`.
+fn group_argument(tokens: &[Token], first: usize) -> Option<String> {
+    let base = match tokens.get(first).map(|token| &token.kind) {
+        Some(TokenKind::Word(value)) => value.clone(),
+        _ => return None,
+    };
+    let index = match tokens.get(first + 1).map(|token| &token.kind) {
+        Some(TokenKind::Symbol(b'[')) => match tokens.get(first + 2).map(|token| &token.kind) {
+            Some(TokenKind::Word(index)) => Some(index.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    Some(indexed_value(&base, index.as_deref()))
 }
 
 /// A simple or complex attribute found in a cell's source text.
@@ -4977,13 +5052,11 @@ fn scan_source_groups(text: &str) -> PyResult<(Vec<SourceGroup>, Vec<SourceAttri
                         Some(TokenKind::Symbol(b'{'))
                     );
                     if opens_group {
-                        let arg = match tokens.get(index + 2).map(|token| &token.kind) {
-                            Some(TokenKind::Word(value)) => Some(value.clone()),
-                            _ => None,
-                        };
+                        let arg = group_argument(&tokens, index + 2);
                         groups.push(SourceGroup {
                             keyword: word.clone(),
                             arg,
+                            start: tokens[index].start,
                             close: 0,
                         });
                         open.push(groups.len() - 1);
@@ -5052,6 +5125,97 @@ fn render_complex_attribute_value(value: &str) -> String {
     parts.join(", ")
 }
 
+/// The group an edit's pin refers to.
+///
+/// A pin edit that names its container (the bus or bundle the pin was taken
+/// from) is patched in the pin group inside that container. A pin edit
+/// without a container is patched in the only pin group of that name in the
+/// cell: when the name matches more than one group the write fails instead
+/// of patching an arbitrary one.
+fn resolve_pin_group(
+    groups: &[SourceGroup],
+    cell_name: &str,
+    pin: &str,
+    container: Option<&(ContainerKind, String)>,
+) -> PyResult<usize> {
+    let candidates: Vec<usize> = groups
+        .iter()
+        .enumerate()
+        .filter(|(_, group)| group.keyword == "pin" && group.arg.as_deref() == Some(pin))
+        .map(|(index, _)| index)
+        .collect();
+    let Some((kind, container_name)) = container else {
+        return match candidates.len() {
+            1 => Ok(candidates[0]),
+            0 => Err(PyValueError::new_err(format!(
+                "cell {cell_name:?} has no pin {pin:?} to edit"
+            ))),
+            _ => Err(PyValueError::new_err(format!(
+                "cell {cell_name:?} has {} pins named {pin:?} ({}); the edit does not say \
+                 which one to patch",
+                candidates.len(),
+                describe_pin_locations(groups, &candidates)
+            ))),
+        };
+    };
+    let container_group = groups
+        .iter()
+        .position(|group| {
+            group.keyword == kind.keyword() && group.arg.as_deref() == Some(container_name.as_str())
+        })
+        .ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "cell {cell_name:?} has no {} {container_name:?} to edit",
+                kind.keyword()
+            ))
+        })?;
+    let inside: Vec<usize> = candidates
+        .iter()
+        .copied()
+        .filter(|&index| {
+            groups[index].start > groups[container_group].start
+                && groups[index].close <= groups[container_group].close
+        })
+        .collect();
+    match inside.len() {
+        1 => Ok(inside[0]),
+        0 => Err(PyValueError::new_err(format!(
+            "cell {cell_name:?} has no pin {pin:?} in {} {container_name:?} to edit",
+            kind.keyword()
+        ))),
+        _ => Err(PyValueError::new_err(format!(
+            "cell {cell_name:?} has {} pins named {pin:?} in {} {container_name:?}; the edit \
+             does not say which one to patch",
+            inside.len(),
+            kind.keyword()
+        ))),
+    }
+}
+
+/// Where the candidate pin groups live, for the ambiguity message: the
+/// innermost group that contains them (`bus (A)`, `bundle (B)`, …).
+fn describe_pin_locations(groups: &[SourceGroup], candidates: &[usize]) -> String {
+    candidates
+        .iter()
+        .map(|&index| {
+            groups
+                .iter()
+                .filter(|group| {
+                    group.start < groups[index].start && group.close >= groups[index].close
+                })
+                .max_by_key(|group| group.start)
+                .and_then(|group| {
+                    group
+                        .arg
+                        .as_deref()
+                        .map(|arg| format!("{} ({arg})", group.keyword))
+                })
+                .unwrap_or_else(|| "the cell".to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Apply attribute edits to one cell group's source text.
 ///
 /// Every edit is turned into a `(start, end, text)` range against the
@@ -5075,12 +5239,7 @@ fn patch_cell_text(cell_text: &str, cell_name: &str, edits: &[&AttrEdit]) -> PyR
     for (order, edit) in edits.iter().enumerate() {
         let target_group = match &edit.pin {
             None => cell_group,
-            Some(pin) => groups
-                .iter()
-                .position(|group| group.keyword == "pin" && group.arg.as_deref() == Some(pin))
-                .ok_or_else(|| {
-                    PyValueError::new_err(format!("cell {cell_name:?} has no pin {pin:?} to edit"))
-                })?,
+            Some(pin) => resolve_pin_group(&groups, cell_name, pin, edit.container.as_ref())?,
         };
         let existing = attributes
             .iter()
