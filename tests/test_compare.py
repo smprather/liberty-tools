@@ -332,7 +332,55 @@ NAN_VALUES_LIBRARY = OURS.replace(
     'values ("10, 20, nan, 40");',
 )
 
-# The same table as `OURS`, with a load of 1 pF and 2 pF and an input
+# The same library, but it declares a current unit and holds a CCS table
+# whose values are currents. The current unit of the two libraries differs
+# by a factor of a thousand, so the currents they hold are a thousand
+# apart even when the numbers are the same.
+CURRENT_LIBRARY = """
+library (current_library) {
+  time_unit : "1ns";
+  voltage_unit : "1V";
+  current_unit : "1mA";
+  capacitive_load_unit (1, pf);
+  lu_table_template (delay_template) {
+    variable_1 : total_output_net_capacitance;
+    variable_2 : input_net_transition;
+  }
+  lu_table_template (ccst_template) {
+    variable_1 : input_net_transition;
+    variable_2 : output_voltage;
+  }
+  cell (u1) {
+    area : 1.0;
+    pin (z) {
+      direction : output;
+      timing () {
+        related_pin : "a";
+        cell_rise (delay_template) {
+          index_1 ("0.1, 0.2");
+          index_2 ("1, 2");
+          values ("10, 20, 30, 40");
+        }
+        output_current_rise (ccst_template) {
+          index_1 ("1, 2");
+          index_2 ("1.0, 2.0");
+          values ("10, 20, 30, 40");
+        }
+      }
+    }
+    pin (a) {
+      direction : input;
+    }
+  }
+}
+"""
+
+AMPERE_LIBRARY = CURRENT_LIBRARY.replace(
+    'current_unit : "1mA";',
+    'current_unit : "1A";',
+)
+
+# The same table, with a load of 1 pF and 2 pF and an input
 # transition of 0.1 ns and 0.2 ns: the grid shorthands must find the axes
 # whatever their numbers are.
 GRID_LIBRARY = """
@@ -762,6 +810,57 @@ def test_a_capacitive_load_multiplier_mismatch_is_reported(tmp_path: Path):
 
     assert diff.entries == []
     assert diff.max_abs_delta() is None
+
+
+def test_a_current_unit_mismatch_is_reported_instead_of_diffed(tmp_path: Path):
+    milli = lt.parse_file(_write(tmp_path, "milli.lib", CURRENT_LIBRARY))
+    ampere = lt.parse_file(_write(tmp_path, "ampere.lib", AMPERE_LIBRARY))
+
+    diff = lt.compare(milli, ampere, cell="u1")
+
+    # The two libraries declare the same currents in different units, so
+    # the numbers of their current tables mean different quantities.
+    assert diff.unit_mismatches
+    mismatch = diff.unit_mismatches[0]
+    assert mismatch.dimension == "current"
+    assert mismatch.unit_a == "1mA"
+    assert mismatch.unit_b == "1A"
+    assert mismatch.cell == "u1"
+    assert mismatch.pin == "z"
+    assert mismatch.table == "output_current_rise"
+
+    # The current table is not diffed: no delta is reported for it.
+    assert [entry for entry in diff.entries if entry.table == "output_current_rise"] == []
+    assert diff.max_abs_delta() == 0.0
+
+    # The other table does not depend on the current unit, so it is still
+    # compared.
+    assert [entry for entry in diff.entries if entry.table == "cell_rise"]
+
+    assert diff.summary()["unit_mismatches"] == len(diff.unit_mismatches)
+    assert diff.has_differences is True
+
+
+def test_a_point_without_a_value_on_either_side_is_not_a_difference(
+    tmp_path: Path,
+):
+    document = lt.parse_file(_write(tmp_path, "nan.lib", NAN_VALUES_LIBRARY))
+
+    diff = lt.compare(document, document, cell="u1")
+
+    # The `nan` value is no value at all: the point has no data on either
+    # side, so the two documents do not differ there.
+    assert diff.unmatched == []
+    assert diff.has_differences is False
+    assert diff.summary()["unmatched"] == 0
+
+    # A point that has a value on one side only is still unmatched.
+    ours = lt.parse_file(_write(tmp_path, "ours.lib", OURS))
+    diff = lt.compare(ours, document, cell="u1")
+    assert len(diff.unmatched) == 1
+    assert diff.unmatched[0].value_b is None
+    assert diff.unmatched[0].delta is None
+    assert diff.has_differences is True
 
 
 def test_libraries_with_the_same_units_are_compared_numerically(docs):

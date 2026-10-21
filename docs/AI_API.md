@@ -518,7 +518,7 @@ diff.unit_mismatches       # tables whose unit dimension differs between the lib
 diff.axis_role_mismatches  # tables whose axis roles are known on both sides but differ
 diff.malformed_tables      # tables whose values do not fill their grid
 diff.duplicate_arcs        # arcs whose identity is not unique
-diff.unmatched             # points that exist in only one of the two grids
+diff.unmatched             # points with a value on only one side
 diff.has_differences       # True when the two libraries differ in any way
 ```
 
@@ -533,7 +533,7 @@ The policy the comparison follows: a table it cannot compare *honestly* is
 reported, never diffed.
 
 - A table whose **unit dimension differs** between the two libraries — a
-  time, a capacitive load or a voltage — is reported in
+  time, a capacitive load, a voltage or a current — is reported in
   `diff.unit_mismatches` as a `UnitMismatch`, not diffed. Its numbers would
   measure the same quantity in different units.
 - A table whose **axis roles are known on both sides but do not correspond**
@@ -561,18 +561,27 @@ How the matching works:
   compared against the load axis of the other even when the two files store
   them in a different order. When the roles are unknown the axes are matched
   by position.
-- Points that exist in only one grid are reported with the missing side left
-  as `None` and `delta` left as `None`; they are also listed in
-  `diff.unmatched`.
+- Points that have a value on only one side — missing from the other grid,
+  non-finite there, or dropped because the other side's table is malformed
+  — are reported with the missing side left as `None` and `delta` left as
+  `None`; those points are listed in `diff.unmatched`. A point that has no
+  value on either side is no difference: both libraries agree that there is
+  no data there, so it is not listed.
 - Tables with a different number of axes cannot be intersected or
   interpolated; they are reported in `diff.shape_mismatches` instead.
 
+The specific reason a table was not compared is reported next to it:
+`diff.malformed_tables` for a table whose values do not fill its grid,
+`diff.unit_mismatches` for a table whose unit dimension differs and
+`diff.axis_role_mismatches` for a table whose axes cannot be aligned.
+
 `diff.has_differences` is `True` when *any* kind of difference was found —
-differing values, points in only one grid, arcs or tables in only one
-document, a shape mismatch, a unit or axis-role mismatch, a malformed table
-or a duplicate arc. `diff.summary()` counts every one of those kinds, so a
-consumer gating on `summary()["has_differences"]` cannot read a missing or
-incomparable table as "the libraries are the same".
+differing values, points with a value in only one of the two documents,
+arcs or tables in only one document, a shape mismatch, a unit or axis-role
+mismatch, a malformed table or a duplicate arc. `diff.summary()` counts
+every one of those kinds, so a consumer gating on
+`summary()["has_differences"]` cannot read a missing or incomparable table as
+"the libraries are the same".
 
 With `interpolate=True` the second document is interpolated onto the first
 document's grid instead of comparing only the shared points:

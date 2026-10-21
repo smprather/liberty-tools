@@ -33,7 +33,7 @@ __all__ = [
 DEFAULT_TOLERANCE = 1e-9
 
 #: The unit dimensions a table can depend on.
-_UNIT_DIMENSIONS = ("time", "capacitive_load", "voltage")
+_UNIT_DIMENSIONS = ("time", "capacitive_load", "voltage", "current")
 
 #: Tables whose *values* are times, whatever their axes are named.
 _TIME_TABLE_NAMES = frozenset(
@@ -46,6 +46,17 @@ _TIME_TABLE_NAMES = frozenset(
         "fall_constraint",
     }
 )
+
+#: Tables whose *values* are currents, whatever their axes are named.
+_CURRENT_TABLE_NAMES = frozenset(
+    {
+        "output_current_rise",
+        "output_current_fall",
+    }
+)
+
+#: The prefixes of the CCS tables whose *values* are currents.
+_CURRENT_TABLE_PREFIXES = ("ccst_", "ccsp_")
 
 #: The timing type an arc has when the library does not declare one:
 #: Liberty's default.
@@ -179,9 +190,9 @@ class UnitMismatch:
 
     ``unit_a`` and ``unit_b`` carry the *whole* declaration of the dimension,
     so that every difference is visible in the reported fields: the
-    ``time_unit`` and ``voltage_unit`` strings as declared, and the
-    multiplier and the unit of the capacitive load together (``"1 pf"``,
-    ``"1000 pf"``).
+    ``time_unit``, ``voltage_unit`` and ``current_unit`` strings as
+    declared, and the multiplier and the unit of the capacitive load
+    together (``"1 pf"``, ``"1000 pf"``).
     """
 
     #: The cell the table belongs to.
@@ -190,8 +201,8 @@ class UnitMismatch:
     pin: str
     #: The name of the table.
     table: str
-    #: The dimension that differs: ``"time"``, ``"capacitive_load"`` or
-    #: ``"voltage"``.
+    #: The dimension that differs: ``"time"``, ``"capacitive_load"``,
+    #: ``"voltage"`` or ``"current"``.
     dimension: str
     #: The declaration the first document makes of the dimension (``None``
     #: when it declares none).
@@ -307,19 +318,30 @@ class Comparison:
 
     @property
     def unmatched(self) -> list[CompareEntry]:
-        """The entries where only one of the two documents has a value."""
-        return [entry for entry in self.entries if not entry.matched]
+        """The entries where only one of the two documents has a value.
+
+        A point that has no value on *either* side is not a difference: both
+        documents agree that there is no data there, so it is not reported.
+        """
+        return [
+            entry
+            for entry in self.entries
+            if (entry.value_a is None) != (entry.value_b is None)
+        ]
 
     @property
     def has_differences(self) -> bool:
         """Do the two documents differ in any way?
 
         True when the comparison found a difference of any kind: points whose
-        values differ, points that exist in only one grid, arcs or tables
-        that exist in only one document, tables whose grids have a different
-        shape, tables that were not compared because of a unit or an axis
-        role mismatch, tables whose values do not fill their grid, and arcs
-        whose identity is not unique.
+        values differ, points that have a value in only one of the two
+        documents, arcs or tables that exist in only one document, tables
+        whose grids have a different shape, tables that were not compared
+        because of a unit or an axis role mismatch, tables whose values do
+        not fill their grid, and arcs whose identity is not unique.
+
+        A point that has no value in either document is not a difference:
+        both documents agree that there is no data there.
         """
         return bool(
             self.mismatched
@@ -466,10 +488,14 @@ def compare(
     gets a value. Points that exist in only one grid are always reported, with
     the missing side left as ``None``.
 
+    A point that has no value in either document — a ``nan`` on both sides —
+    is no difference: both documents agree that there is no data there, so it
+    is not reported as unmatched.
+
     A table that depends on a unit the two documents declare differently — a
-    time, a capacitive load or a voltage — is not diffed: its numbers would
-    measure different physical quantities. Such a table is reported in
-    :attr:`Comparison.unit_mismatches` instead.
+    time, a capacitive load, a voltage or a current — is not diffed: its
+    numbers would measure different physical quantities. Such a table is
+    reported in :attr:`Comparison.unit_mismatches` instead.
 
     A table whose values do not fill its grid is malformed: its values
     cannot be lined up with the points they belong to. None of them is
@@ -627,6 +653,7 @@ def _unit_declarations(
             document.capacitive_load_multiplier,
         ),
         "voltage": (_strip_unit(document.voltage_unit), None),
+        "current": (_strip_unit(document.current_unit), None),
     }
 
 
@@ -683,6 +710,8 @@ def _dimension_of_role(role: str | None) -> str | None:
         return "capacitive_load"
     if "voltage" in text:
         return "voltage"
+    if "current" in text:
+        return "current"
     return None
 
 
@@ -694,11 +723,14 @@ def _affected_dimensions(
 
     A table depends on a dimension when one of its axes names it, or when
     its values carry it (a ``cell_rise`` holds times even when no axis says
-    so).
+    so, and an ``output_current_rise`` holds currents).
     """
     dimensions: set[str] = set()
-    if table_name.split("[", 1)[0] in _TIME_TABLE_NAMES:
+    name = table_name.split("[", 1)[0]
+    if name in _TIME_TABLE_NAMES:
         dimensions.add("time")
+    if name in _CURRENT_TABLE_NAMES or name.startswith(_CURRENT_TABLE_PREFIXES):
+        dimensions.add("current")
     for table in tables:
         for role in table.axis_roles():
             dimension = _dimension_of_role(role)

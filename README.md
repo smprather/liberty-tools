@@ -377,14 +377,14 @@ diff.unit_mismatches       # tables whose unit dimension differs between the lib
 diff.axis_role_mismatches  # tables whose axis roles are known on both sides but differ
 diff.malformed_tables      # tables whose values do not fill their grid
 diff.duplicate_arcs        # arcs whose identity is not unique
-diff.unmatched             # points that exist in only one of the two grids
+diff.unmatched             # points with a value on only one side
 diff.has_differences       # True when the two libraries differ in any way
 ```
 
 - A table whose **unit dimension differs** between the two libraries — a
-  time, a capacitive load or a voltage — is reported as a `UnitMismatch`,
-  not diffed: its numbers would measure the same quantity in different
-  units.
+  time, a capacitive load, a voltage or a current — is reported as a
+  `UnitMismatch`, not diffed: its numbers would measure the same quantity in
+  different units.
 - A table whose **axis roles are known on both sides but do not
   correspond** is reported as an `AxisRoleMismatch`, not matched
   positionally: matching by position would compare different quantities and
@@ -405,9 +405,15 @@ aligned by axis role, so the load axis of one library is compared against the
 load axis of the other even when the two files store them in a different
 order.
 
-Points that exist in only one grid are reported with the missing side left as
-`None`. Tables whose grids have a different number of axes cannot be
-intersected or interpolated; they are reported in `diff.shape_mismatches`.
+Points that have a value on only one side — missing from the other grid,
+non-finite there, or dropped because the other side's table is malformed —
+are reported with the missing side left as `None` and listed in
+`diff.unmatched`; a point that has no value on either side is no difference
+and is not listed. The reason a table was not compared is reported next to
+it, in `diff.malformed_tables`, `diff.unit_mismatches` and
+`diff.axis_role_mismatches`. Tables whose grids have a different number of
+axes cannot be intersected or interpolated; they are reported in
+`diff.shape_mismatches`.
 With `interpolate=True` the second document is interpolated onto the first
 document's grid instead:
 
