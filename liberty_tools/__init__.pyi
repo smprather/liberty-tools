@@ -515,6 +515,14 @@ class AxisRoleMismatch:
     roles_b: tuple[str | None, ...]
 
 
+class MalformedTable:
+    cell: str
+    pin: str
+    table: str
+    expected_values: int
+    actual_values: int
+
+
 class Comparison:
     entries: list[CompareEntry]
     only_in_a: list[ArcKey]
@@ -524,6 +532,7 @@ class Comparison:
     shape_mismatches: list[tuple[ArcKey, str, int, int]]
     unit_mismatches: list[UnitMismatch]
     axis_role_mismatches: list[AxisRoleMismatch]
+    malformed_tables: list[MalformedTable]
     duplicate_arcs: list[ArcKey]
     def __init__(
         self,
@@ -535,6 +544,7 @@ class Comparison:
         shape_mismatches: list[tuple[ArcKey, str, int, int]] = ...,
         unit_mismatches: list[UnitMismatch] = ...,
         axis_role_mismatches: list[AxisRoleMismatch] = ...,
+        malformed_tables: list[MalformedTable] = ...,
         duplicate_arcs: list[ArcKey] = ...,
     ) -> None: ...
     def __len__(self) -> int: ...

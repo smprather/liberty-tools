@@ -12,6 +12,7 @@ extraction API exposes, so a mismatch is reported rather than guessed at.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
@@ -23,6 +24,7 @@ __all__ = [
     "AxisRoleMismatch",
     "CompareEntry",
     "Comparison",
+    "MalformedTable",
     "UnitMismatch",
     "compare",
 ]
@@ -228,6 +230,33 @@ class AxisRoleMismatch:
     roles_b: tuple[str | None, ...]
 
 
+@dataclass(frozen=True)
+class MalformedTable:
+    """A table whose values do not fill its grid.
+
+    A table's values fill its grid: one value per grid point. A table
+    whose values do not fill the grid is malformed — its values cannot be
+    lined up with the points they are supposed to belong to — so none of
+    them is compared: a delta computed from them would be a number without
+    a meaning. Such a table is reported instead of diffed.
+
+    ``expected_values`` is the number of points the grid holds and
+    ``actual_values`` the number of values the table holds. When both
+    tables of a pair are malformed, the first document's is reported.
+    """
+
+    #: The cell the table belongs to.
+    cell: str
+    #: The pin the table belongs to.
+    pin: str
+    #: The name of the table.
+    table: str
+    #: The number of values the table's grid holds.
+    expected_values: int
+    #: The number of values the table holds.
+    actual_values: int
+
+
 @dataclass
 class Comparison:
     """The result of :func:`compare`."""
@@ -252,6 +281,10 @@ class Comparison:
     #: axes differently and no role of one side has a counterpart in the
     #: other.
     axis_role_mismatches: list[AxisRoleMismatch] = field(default_factory=list)
+    #: Tables whose values do not fill their grid: they are reported
+    #: instead of diffed, because their numbers cannot be lined up with
+    #: the points they belong to.
+    malformed_tables: list[MalformedTable] = field(default_factory=list)
     #: Arcs whose identity is not unique: two arcs of the same document
     #: cannot be told apart. Their values are not compared.
     duplicate_arcs: list[ArcKey] = field(default_factory=list)
@@ -285,7 +318,8 @@ class Comparison:
         values differ, points that exist in only one grid, arcs or tables
         that exist in only one document, tables whose grids have a different
         shape, tables that were not compared because of a unit or an axis
-        role mismatch, and arcs whose identity is not unique.
+        role mismatch, tables whose values do not fill their grid, and arcs
+        whose identity is not unique.
         """
         return bool(
             self.mismatched
@@ -297,6 +331,7 @@ class Comparison:
             or self.shape_mismatches
             or self.unit_mismatches
             or self.axis_role_mismatches
+            or self.malformed_tables
             or self.duplicate_arcs
         )
 
@@ -324,15 +359,40 @@ class Comparison:
             "shape_mismatches": len(self.shape_mismatches),
             "unit_mismatches": len(self.unit_mismatches),
             "axis_role_mismatches": len(self.axis_role_mismatches),
+            "malformed_tables": len(self.malformed_tables),
             "duplicate_arcs": len(self.duplicate_arcs),
             "max_abs_delta": self.max_abs_delta(),
             "has_differences": self.has_differences,
         }
 
     def to_polars(self):
-        """The compared points as a :class:`polars.DataFrame`."""
+        """The compared points as a :class:`polars.DataFrame`.
+
+        The frame has the same columns — and the same column types —
+        whether or not there is anything to compare, so a consumer can
+        read an empty comparison without special-casing it.
+        """
         import polars as pl
 
+        schema = {
+            "cell": pl.String,
+            "pin": pl.String,
+            "related_pin": pl.String,
+            "timing_type": pl.String,
+            "timing_sense": pl.String,
+            "when": pl.String,
+            "table": pl.String,
+            "axis_1": pl.String,
+            "axis_2": pl.String,
+            "axis_3": pl.String,
+            "index_1": pl.Float64,
+            "index_2": pl.Float64,
+            "index_3": pl.Float64,
+            "value_a": pl.Float64,
+            "value_b": pl.Float64,
+            "delta": pl.Float64,
+            "relative_delta": pl.Float64,
+        }
         rows = [
             {
                 "cell": entry.cell,
@@ -355,7 +415,7 @@ class Comparison:
             }
             for entry in self.entries
         ]
-        return pl.DataFrame(rows, infer_schema_length=None)
+        return pl.DataFrame(rows, schema=schema)
 
 
 def compare(
@@ -410,6 +470,13 @@ def compare(
     time, a capacitive load or a voltage — is not diffed: its numbers would
     measure different physical quantities. Such a table is reported in
     :attr:`Comparison.unit_mismatches` instead.
+
+    A table whose values do not fill its grid is malformed: its values
+    cannot be lined up with the points they belong to. None of them is
+    compared, and the table is reported in
+    :attr:`Comparison.malformed_tables` instead. A value that is not a
+    number (``nan``, ``inf``) is no value at all: the point it belongs to
+    is reported as missing rather than as a delta of ``nan``.
 
     Args:
         a: The first document (the one being validated).
@@ -508,6 +575,7 @@ def compare(
                             unit_context=units,
                             unit_mismatches=result.unit_mismatches,
                             axis_role_mismatches=result.axis_role_mismatches,
+                            malformed_tables=result.malformed_tables,
                         )
                     )
                 continue
@@ -523,6 +591,7 @@ def compare(
                     unit_context=units,
                     unit_mismatches=result.unit_mismatches,
                     axis_role_mismatches=result.axis_role_mismatches,
+                    malformed_tables=result.malformed_tables,
                 )
             )
     return result
@@ -817,6 +886,7 @@ def _compare_table(
     unit_context: _UnitContext | None = None,
     unit_mismatches: list[UnitMismatch] | None = None,
     axis_role_mismatches: list[AxisRoleMismatch] | None = None,
+    malformed_tables: list[MalformedTable] | None = None,
 ) -> list[CompareEntry]:
     """Compare one pair of tables.
 
@@ -825,6 +895,10 @@ def _compare_table(
     quantities, so the mismatch is reported instead. The same holds for a
     table whose axes the two documents name differently: matching the axes
     by position would compare different quantities.
+
+    A table whose values do not fill its grid is malformed: its values
+    cannot be lined up with the points they belong to, so none of them is
+    used and the table is reported instead.
     """
     if unit_context is not None:
         differing = sorted(
@@ -850,6 +924,30 @@ def _compare_table(
     axes_a = _axes(table_a)
     axes_b = _axes(table_b)
 
+    # A table's values fill its grid. A table whose values do not fill it
+    # is malformed: its numbers cannot be lined up with the points they
+    # belong to, so none of them is used — the table is reported instead.
+    values_a = table_a.values
+    values_b = table_b.values
+    malformed_a = _malformed_values(axes_a, values_a)
+    malformed_b = _malformed_values(axes_b, values_b)
+    if malformed_a is not None or malformed_b is not None:
+        malformed = malformed_a if malformed_a is not None else malformed_b
+        if malformed is not None and malformed_tables is not None:
+            malformed_tables.append(
+                MalformedTable(
+                    cell=key.cell,
+                    pin=key.pin,
+                    table=table_name,
+                    expected_values=malformed[0],
+                    actual_values=malformed[1],
+                )
+            )
+        if malformed_a is not None:
+            values_a = []
+        if malformed_b is not None:
+            values_b = []
+
     # Map b's axes onto a's axes, by role when the roles are known. The
     # values are permuted with the axes: the flat list is row-major over the
     # table's own axis order.
@@ -871,7 +969,7 @@ def _compare_table(
             )
         return []
     axes_b_ordered = [axes_b[index] for index in order_b]
-    values_b = _permute_values(axes_b, order_b, table_b.values)
+    values_b = _permute_values(axes_b, order_b, values_b)
 
     entries: list[CompareEntry] = []
     if interpolate:
@@ -892,7 +990,7 @@ def _compare_table(
                     axis_1=roles_a[0] if len(roles_a) > 0 else None,
                     axis_2=roles_a[1] if len(roles_a) > 1 else None,
                     axis_3=roles_a[2] if len(roles_a) > 2 else None,
-                    value_a=_interpolate(axes_a, table_a.values, point),
+                    value_a=_interpolate(axes_a, values_a, point),
                     value_b=_interpolate(axes_b_ordered, values_b, point),
                 )
             )
@@ -901,7 +999,7 @@ def _compare_table(
     # Points both grids have, and points only one of them has.
     for indices_a, indices_b in _grid_points(axes_a, axes_b_ordered, tolerance):
         point = tuple(axes_a[axis][index] for axis, index in enumerate(indices_a))
-        value_a = _flat_value(axes_a, table_a.values, indices_a)
+        value_a = _flat_value(axes_a, values_a, indices_a)
         value_b = (
             None
             if indices_b is None
@@ -921,6 +1019,32 @@ def _compare_table(
             )
         )
     return entries
+
+
+def _malformed_values(
+    axes: Sequence[Sequence[float]],
+    values: Sequence[float],
+) -> tuple[int, int] | None:
+    """The expected and actual value counts of a malformed table, if any.
+
+    A table's values fill its grid: one value per grid point. A table
+    whose values do not fill the grid is malformed — they cannot be lined
+    up with the points they are supposed to belong to — so none of them is
+    used.
+
+    Returns the expected and the actual number of values, or None when the
+    table is well formed.
+    """
+    expected = 1
+    for axis in axes:
+        expected *= len(axis)
+    if not axes and not values:
+        # A table with neither a grid nor values holds nothing: there is no
+        # grid its values could contradict.
+        return None
+    if len(values) != expected:
+        return (expected, len(values))
+    return None
 
 
 def _entry(
@@ -1000,7 +1124,9 @@ def _same_axis(role_a: str | None, role_b: str | None) -> bool:
 
     Uses the same synonym table as ``TimingTable.lookup``, so that a load axis
     named ``output_capacitance`` matches one named
-    ``total_output_net_capacitance``.
+    ``total_output_net_capacitance`` — and so that the shorthands
+    ``lookup()`` accepts (``load``, ``slew``, ``transition``) name the axes
+    they belong to.
     """
     if role_a is None or role_b is None:
         return False
@@ -1008,7 +1134,9 @@ def _same_axis(role_a: str | None, role_b: str | None) -> bool:
         return True
     from . import _axis_role_matches
 
-    return _axis_role_matches(role_b, role_a)
+    # The synonym table is looked up by the keyword, so both directions are
+    # tried: a shorthand names a group, but is not part of it.
+    return _axis_role_matches(role_b, role_a) or _axis_role_matches(role_a, role_b)
 
 
 def _match_value(values: Sequence[float], target: float, tolerance: float) -> int | None:
@@ -1131,13 +1259,21 @@ def _flat_value(
     values: Sequence[float],
     indices: Sequence[int],
 ) -> float | None:
-    """The table value at a grid position."""
+    """The table value at a grid position, or None when it has none.
+
+    A value that is not a number (``nan``, ``inf``) is no value at all:
+    the point it belongs to has no data, not a data that cannot be
+    compared.
+    """
     flat = 0
     for axis, index in zip(axes, indices):
         flat = flat * len(axis) + index
     if flat >= len(values):
         return None
-    return values[flat]
+    value = values[flat]
+    if not math.isfinite(value):
+        return None
+    return value
 
 
 def _requested_points(
@@ -1198,9 +1334,18 @@ def _interpolate(
     values: Sequence[float],
     point: Sequence[float],
 ) -> float | None:
-    """Interpolate the table at a point, or None when it is outside the grid."""
+    """Interpolate the table at a point, or None when it is outside the grid.
+
+    The interpolation needs every corner of the box the point falls into:
+    a corner that has no value — or a value that is not a number — leaves
+    the result unknown, and an unknown result is reported as missing rather
+    than guessed at.
+    """
     if not axes:
-        return values[0] if values else None
+        if not values:
+            return None
+        value = values[0]
+        return value if math.isfinite(value) else None
     if len(axes) != len(point):
         # The point has a different number of coordinates than the table has
         # axes: interpolating would silently drop a dimension.
@@ -1224,8 +1369,14 @@ def _interpolate(
             else:
                 factor = ratio
             weight *= factor
-        if flat < len(values):
-            total += values[flat] * weight
+        if flat >= len(values):
+            # The box reaches a point the table has no value for: the
+            # result is unknown, not zero.
+            return None
+        value = values[flat]
+        if not math.isfinite(value):
+            return None
+        total += value * weight
     return total
 
 

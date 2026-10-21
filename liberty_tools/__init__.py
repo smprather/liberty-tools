@@ -10,6 +10,7 @@ from .compare import (
     AxisRoleMismatch,
     CompareEntry,
     Comparison,
+    MalformedTable,
     UnitMismatch,
     compare,
 )
@@ -1251,6 +1252,7 @@ __all__ = [
     "LeakagePower",
     "LibertyDocument",
     "LibraryIndex",
+    "MalformedTable",
     "MinPulseWidth",
     "Pin",
     "PgCurrent",

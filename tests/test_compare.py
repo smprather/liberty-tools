@@ -319,6 +319,57 @@ library (role_b) {
 """
 
 
+# A table whose grid has four points but whose values hold only two: the
+# table is malformed, and none of its numbers can be trusted.
+SHORT_VALUES_LIBRARY = OURS.replace(
+    'values ("10, 20, 30, 40");',
+    'values ("10, 30");',
+)
+
+# The same table, with one of its values not a number at all.
+NAN_VALUES_LIBRARY = OURS.replace(
+    'values ("10, 20, 30, 40");',
+    'values ("10, 20, nan, 40");',
+)
+
+# The same table as `OURS`, with a load of 1 pF and 2 pF and an input
+# transition of 0.1 ns and 0.2 ns: the grid shorthands must find the axes
+# whatever their numbers are.
+GRID_LIBRARY = """
+library (grid_library) {
+  time_unit : "1ns";
+  capacitive_load_unit (1, pf);
+  lu_table_template (delay_template) {
+    variable_1 : total_output_net_capacitance;
+    variable_2 : input_net_transition;
+  }
+  cell (u1) {
+    area : 1.0;
+    pin (z) {
+      direction : output;
+      timing () {
+        related_pin : "a";
+        cell_rise (delay_template) {
+          index_1 ("1, 2");
+          index_2 ("0.1, 0.2");
+          values ("10, 20, 30, 40");
+        }
+      }
+    }
+    pin (a) {
+      direction : input;
+    }
+  }
+}
+"""
+
+# The same table with different numbers.
+GRID_LIBRARY_B = GRID_LIBRARY.replace(
+    'values ("10, 20, 30, 40");',
+    'values ("12, 22, 32, 42");',
+)
+
+
 def _write(tmp_path: Path, name: str, text: str) -> Path:
     path = tmp_path / name
     path.write_text(text, encoding="utf-8")
@@ -407,8 +458,10 @@ def test_arcs_missing_from_one_document_are_reported(tmp_path: Path):
 
 def test_points_missing_from_one_grid_are_reported(tmp_path: Path):
     ours = lt.parse_file(_write(tmp_path, "ours.lib", OURS))
+    # The second library keeps only the first point of its load axis, so its
+    # table holds two values for the two points of the remaining grid.
     smaller = THEIRS.replace('index_2 ("0.1, 0.2");', 'index_2 ("0.1");').replace(
-        'values ("10, 30, 20, 40");', 'values ("10, 30");'
+        'values ("10, 35, 20, 40");', 'values ("10, 30");'
     )
     theirs = lt.parse_file(_write(tmp_path, "theirs.lib", smaller))
 
@@ -901,4 +954,126 @@ def test_a_library_with_two_cell_groups_of_the_same_name_is_still_compared(
     assert diff.duplicate_arcs == []
     assert len(diff.entries) == 4
     assert all(entry.matched for entry in diff.entries)
+
+
+def test_a_table_with_too_few_values_is_reported_as_malformed(tmp_path: Path):
+    ours = lt.parse_file(_write(tmp_path, "ours.lib", OURS))
+    theirs = lt.parse_file(_write(tmp_path, "theirs.lib", SHORT_VALUES_LIBRARY))
+
+    diff = lt.compare(ours, theirs, cell="u1")
+
+    # The grid of the table has four points but its values hold two: the
+    # table is reported instead of diffed.
+    assert len(diff.malformed_tables) == 1
+    malformed = diff.malformed_tables[0]
+    assert malformed.cell == "u1"
+    assert malformed.pin == "z"
+    assert malformed.table == "cell_rise"
+    assert malformed.expected_values == 4
+    assert malformed.actual_values == 2
+
+    # The malformed table is not compared numerically: no delta is reported
+    # for it, so no wrong number can be read out of the comparison.
+    assert diff.entries
+    assert all(
+        entry.delta is None
+        for entry in diff.entries
+        if entry.table == "cell_rise"
+    )
+    assert diff.max_abs_delta() is None
+
+    assert diff.summary()["malformed_tables"] == 1
+    assert diff.has_differences is True
+
+
+def test_interpolation_does_not_invent_values_for_a_malformed_table(
+    tmp_path: Path,
+):
+    ours = lt.parse_file(_write(tmp_path, "ours.lib", OURS))
+    theirs = lt.parse_file(_write(tmp_path, "theirs.lib", SHORT_VALUES_LIBRARY))
+
+    diff = lt.compare(ours, theirs, cell="u1", interpolate=True)
+
+    # The missing values are missing data, not zeroes: the points where the
+    # second document has no value get no value at all.
+    assert len(diff.entries) == 4
+    assert all(entry.value_a is not None for entry in diff.entries)
+    assert all(entry.value_b is None for entry in diff.entries)
+    assert all(entry.delta is None for entry in diff.entries)
+    assert diff.max_abs_delta() is None
+
+
+def test_a_nan_value_is_not_treated_as_data(tmp_path: Path):
+    ours = lt.parse_file(_write(tmp_path, "ours.lib", OURS))
+    theirs = lt.parse_file(_write(tmp_path, "theirs.lib", NAN_VALUES_LIBRARY))
+
+    diff = lt.compare(ours, theirs, cell="u1")
+
+    # The third value of the table is `nan`: it is not a number, so the
+    # point has no data instead of a delta of `nan`.
+    by_point = {(entry.index_1, entry.index_2): entry for entry in diff.entries}
+    entry = by_point[(0.2, 1.0)]
+    assert entry.value_b is None
+    assert entry.matched is False
+    assert entry.delta is None
+
+    # The points that do have a value are still compared.
+    assert len(diff.matched) == 3
+    assert diff.mismatched == []
+    assert diff.max_abs_delta() == 0.0
+
+
+def test_to_polars_of_an_empty_comparison_has_the_documented_columns(
+    docs,
+):
+    ours, theirs = docs
+
+    diff = lt.compare(ours, theirs, cell="u1", table="cell_fall")
+
+    assert diff.entries == []
+    frame = diff.to_polars()
+    assert len(frame) == 0
+    assert frame.columns == [
+        "cell",
+        "pin",
+        "related_pin",
+        "timing_type",
+        "timing_sense",
+        "when",
+        "table",
+        "axis_1",
+        "axis_2",
+        "axis_3",
+        "index_1",
+        "index_2",
+        "index_3",
+        "value_a",
+        "value_b",
+        "delta",
+        "relative_delta",
+    ]
+
+
+def test_the_grid_accepts_the_lookup_shorthands(tmp_path: Path):
+    a = lt.parse_file(_write(tmp_path, "a.lib", GRID_LIBRARY))
+    b = lt.parse_file(_write(tmp_path, "b.lib", GRID_LIBRARY_B))
+
+    diff = lt.compare(
+        a,
+        b,
+        cell="u1",
+        interpolate=True,
+        grid={"load": [1.0], "transition": [0.1]},
+    )
+
+    # The shorthands `lookup()` accepts resolve to the axes they belong to:
+    # a load of 1 pF and an input transition of 0.1 ns are the first point
+    # of the grid.
+    assert len(diff.entries) == 1
+    entry = diff.entries[0]
+    assert entry.index_1 == 1.0
+    assert entry.index_2 == 0.1
+    assert entry.value_a == 10.0
+    assert entry.value_b == 12.0
+    assert entry.delta == -2.0
 
