@@ -22,11 +22,27 @@ __all__ = [
     "ArcKey",
     "CompareEntry",
     "Comparison",
+    "UnitMismatch",
     "compare",
 ]
 
 #: Relative tolerance used when matching axis values of two tables.
 DEFAULT_TOLERANCE = 1e-9
+
+#: The unit dimensions a table can depend on.
+_UNIT_DIMENSIONS = ("time", "capacitive_load", "voltage")
+
+#: Tables whose *values* are times, whatever their axes are named.
+_TIME_TABLE_NAMES = frozenset(
+    {
+        "cell_rise",
+        "cell_fall",
+        "rise_transition",
+        "fall_transition",
+        "rise_constraint",
+        "fall_constraint",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -115,6 +131,40 @@ class CompareEntry:
         return self.value_a is not None and self.value_b is not None
 
 
+@dataclass(frozen=True)
+class UnitMismatch:
+    """A table that was not compared because the two libraries use
+    different units.
+
+    Diffing the numbers of two tables that measure the same quantity in
+    different units is meaningless: the numbers are the same but the
+    quantities are not (or the other way round, the numbers differ by a
+    factor of a thousand). Such a table is reported instead of diffed.
+
+    ``unit_a`` and ``unit_b`` carry the *whole* declaration of the dimension,
+    so that every difference is visible in the reported fields: the
+    ``time_unit`` and ``voltage_unit`` strings as declared, and the
+    multiplier and the unit of the capacitive load together (``"1 pf"``,
+    ``"1000 pf"``).
+    """
+
+    #: The cell the table belongs to.
+    cell: str
+    #: The pin the table belongs to.
+    pin: str
+    #: The name of the table.
+    table: str
+    #: The dimension that differs: ``"time"``, ``"capacitive_load"`` or
+    #: ``"voltage"``.
+    dimension: str
+    #: The declaration the first document makes of the dimension (``None``
+    #: when it declares none).
+    unit_a: str | None
+    #: The declaration the second document makes of the dimension (``None``
+    #: when it declares none).
+    unit_b: str | None
+
+
 @dataclass
 class Comparison:
     """The result of :func:`compare`."""
@@ -132,6 +182,9 @@ class Comparison:
     #: Tables whose grids have a different number of axes:
     #: ``(arc, table, axes in the first document, axes in the second)``.
     shape_mismatches: list[tuple[ArcKey, str, int, int]] = field(default_factory=list)
+    #: Tables that were not compared because the two documents declare
+    #: different units for one of their dimensions.
+    unit_mismatches: list[UnitMismatch] = field(default_factory=list)
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -163,6 +216,7 @@ class Comparison:
             "only_in_a_arcs": len(self.only_in_a),
             "only_in_b_arcs": len(self.only_in_b),
             "shape_mismatches": len(self.shape_mismatches),
+            "unit_mismatches": len(self.unit_mismatches),
             "max_abs_delta": self.max_abs_delta(),
         }
 
@@ -226,6 +280,11 @@ def compare(
     gets a value. Points that exist in only one grid are always reported, with
     the missing side left as ``None``.
 
+    A table that depends on a unit the two documents declare differently — a
+    time, a capacitive load or a voltage — is not diffed: its numbers would
+    measure different physical quantities. Such a table is reported in
+    :attr:`Comparison.unit_mismatches` instead.
+
     Args:
         a: The first document (the one being validated).
         b: The second document (the reference).
@@ -254,6 +313,7 @@ def compare(
     arcs_b = _collect_arcs(b, names, pin)
 
     result = Comparison()
+    units = _unit_context(a, b)
     matched_pairs, only_in_a, only_in_b = _match_arcs(arcs_a, arcs_b)
     result.only_in_a = only_in_a
     result.only_in_b = only_in_b
@@ -307,6 +367,8 @@ def compare(
                             interpolate=interpolate,
                             grid=grid,
                             tolerance=tolerance,
+                            unit_context=units,
+                            unit_mismatches=result.unit_mismatches,
                         )
                     )
                 continue
@@ -319,9 +381,121 @@ def compare(
                     interpolate=interpolate,
                     grid=grid,
                     tolerance=tolerance,
+                    unit_context=units,
+                    unit_mismatches=result.unit_mismatches,
                 )
             )
     return result
+
+
+@dataclass(frozen=True)
+class _UnitContext:
+    """The unit declarations of two documents, and the dimensions that differ."""
+
+    #: The declaration each document makes of each dimension.
+    units_a: dict[str, str | None]
+    units_b: dict[str, str | None]
+    #: The dimensions whose declaration differs between the two documents.
+    mismatched: frozenset[str]
+
+
+def _strip_unit(value: str | None) -> str | None:
+    """The unit string without surrounding whitespace."""
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _unit_declarations(
+    document: LibertyDocument,
+) -> dict[str, tuple[str | None, float | None]]:
+    """The declaration of every unit dimension: ``(unit, multiplier)``."""
+    return {
+        "time": (_strip_unit(document.time_unit), None),
+        "capacitive_load": (
+            _strip_unit(document.capacitive_load_unit),
+            document.capacitive_load_multiplier,
+        ),
+        "voltage": (_strip_unit(document.voltage_unit), None),
+    }
+
+
+def _declaration_text(
+    dimension: str,
+    unit: str | None,
+    multiplier: float | None,
+) -> str | None:
+    """The whole declaration of a dimension, as it is reported.
+
+    The capacitive load is declared as a multiplier *and* a unit
+    (``capacitive_load_unit (1, pf)``), so both are reported: the multiplier
+    alone is a difference the reader must see.
+    """
+    if dimension == "capacitive_load" and multiplier is not None:
+        return f"{multiplier:g} {unit}" if unit else f"{multiplier:g}"
+    return unit
+
+
+def _unit_context(a: LibertyDocument, b: LibertyDocument) -> _UnitContext:
+    """The unit declarations of two documents and the dimensions that differ.
+
+    The unit strings are compared verbatim (after stripping whitespace); the
+    multiplier of the capacitive load unit is compared numerically.
+    """
+    declarations_a = _unit_declarations(a)
+    declarations_b = _unit_declarations(b)
+    mismatched = {
+        dimension
+        for dimension in _UNIT_DIMENSIONS
+        if declarations_a[dimension] != declarations_b[dimension]
+    }
+    return _UnitContext(
+        units_a={
+            dimension: _declaration_text(dimension, *value)
+            for dimension, value in declarations_a.items()
+        },
+        units_b={
+            dimension: _declaration_text(dimension, *value)
+            for dimension, value in declarations_b.items()
+        },
+        mismatched=frozenset(mismatched),
+    )
+
+
+def _dimension_of_role(role: str | None) -> str | None:
+    """The unit dimension an axis role names, if any."""
+    if not role:
+        return None
+    text = role.lower()
+    if "transition" in text or "time" in text:
+        return "time"
+    if "capacitance" in text:
+        return "capacitive_load"
+    if "voltage" in text:
+        return "voltage"
+    return None
+
+
+def _affected_dimensions(
+    table_name: str,
+    tables: Iterable[TimingTable],
+) -> set[str]:
+    """The unit dimensions a table depends on.
+
+    A table depends on a dimension when one of its axes names it, or when
+    its values carry it (a ``cell_rise`` holds times even when no axis says
+    so).
+    """
+    dimensions: set[str] = set()
+    if table_name.split("[", 1)[0] in _TIME_TABLE_NAMES:
+        dimensions.add("time")
+    for table in tables:
+        for role in table.axis_roles():
+            dimension = _dimension_of_role(role)
+            if dimension is not None:
+                dimensions.add(dimension)
+    return dimensions
 
 
 def _collect_arcs(
@@ -479,8 +653,34 @@ def _compare_table(
     interpolate: bool,
     grid: dict[str, Sequence[float]] | None,
     tolerance: float,
+    unit_context: _UnitContext | None = None,
+    unit_mismatches: list[UnitMismatch] | None = None,
 ) -> list[CompareEntry]:
-    """Compare one pair of tables."""
+    """Compare one pair of tables.
+
+    A table that depends on a unit dimension the two documents declare
+    differently is not compared: its numbers would mean different physical
+    quantities, so the mismatch is reported instead.
+    """
+    if unit_context is not None:
+        differing = sorted(
+            _affected_dimensions(table_name, (table_a, table_b))
+            & unit_context.mismatched
+        )
+        if differing:
+            if unit_mismatches is not None:
+                for dimension in differing:
+                    unit_mismatches.append(
+                        UnitMismatch(
+                            cell=key.cell,
+                            pin=key.pin,
+                            table=table_name,
+                            dimension=dimension,
+                            unit_a=unit_context.units_a.get(dimension),
+                            unit_b=unit_context.units_b.get(dimension),
+                        )
+                    )
+            return []
     roles_a = table_a.axis_roles()
     roles_b = table_b.axis_roles()
     axes_a = _axes(table_a)

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from . import _native
-from .compare import ArcKey, CompareEntry, Comparison, compare
+from .compare import ArcKey, CompareEntry, Comparison, UnitMismatch, compare
 
 
 @dataclass(frozen=True)
@@ -1250,6 +1250,7 @@ __all__ = [
     "SwitchingGroup",
     "TimingArc",
     "TimingTable",
+    "UnitMismatch",
     "compare",
     "parse_file",
 ]

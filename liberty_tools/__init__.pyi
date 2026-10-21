@@ -476,6 +476,15 @@ class CompareEntry:
     def matched(self) -> bool: ...
 
 
+class UnitMismatch:
+    cell: str
+    pin: str
+    table: str
+    dimension: str
+    unit_a: str | None
+    unit_b: str | None
+
+
 class Comparison:
     entries: list[CompareEntry]
     only_in_a: list[ArcKey]
@@ -483,6 +492,7 @@ class Comparison:
     only_in_a_tables: list[tuple[ArcKey, str]]
     only_in_b_tables: list[tuple[ArcKey, str]]
     shape_mismatches: list[tuple[ArcKey, str, int, int]]
+    unit_mismatches: list[UnitMismatch]
     def __len__(self) -> int: ...
     def __iter__(self) -> Iterator[CompareEntry]: ...
     @property

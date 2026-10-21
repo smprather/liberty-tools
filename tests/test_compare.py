@@ -65,6 +65,52 @@ library (theirs) {
 """
 
 
+# The library below is the same in every respect but the unit it declares:
+# `ns_library` and `ps_library` store the same numbers in different units.
+NS_LIBRARY = """
+library (unit_library) {
+  time_unit : "1ns";
+  capacitive_load_unit (1, pf);
+  lu_table_template (delay_template) {
+    variable_1 : total_output_net_capacitance;
+    variable_2 : input_net_transition;
+  }
+  cell (u1) {
+    area : 1.0;
+    pin (z) {
+      direction : output;
+      timing () {
+        related_pin : "a";
+        cell_rise (delay_template) {
+          index_1 ("0.1, 0.2");
+          index_2 ("1, 2");
+          values ("10, 20, 30, 40");
+        }
+      }
+    }
+    pin (a) {
+      direction : input;
+    }
+  }
+}
+"""
+
+PS_LIBRARY = NS_LIBRARY.replace('time_unit : "1ns";', 'time_unit : "1ps";')
+
+# The same table, stored with the load axis in pf and in ff. The numbers of
+# the load axis are scaled accordingly, so both libraries describe the same
+# physical points.
+PF_LIBRARY = NS_LIBRARY
+
+FF_LIBRARY = NS_LIBRARY.replace(
+    "capacitive_load_unit (1, pf);",
+    "capacitive_load_unit (1, ff);",
+).replace(
+    'index_1 ("0.1, 0.2");',
+    'index_1 ("100, 200");',
+)
+
+
 def _write(tmp_path: Path, name: str, text: str) -> Path:
     path = tmp_path / name
     path.write_text(text, encoding="utf-8")
@@ -386,3 +432,83 @@ def test_summary_and_polars_output(docs):
     frame = diff.to_polars()
     assert frame.height == 4
     assert {"cell", "pin", "table", "value_a", "value_b", "delta"} <= set(frame.columns)
+
+
+def test_a_time_unit_mismatch_is_reported_instead_of_diffed(tmp_path: Path):
+    ns = lt.parse_file(_write(tmp_path, "ns.lib", NS_LIBRARY))
+    ps = lt.parse_file(_write(tmp_path, "ps.lib", PS_LIBRARY))
+
+    diff = lt.compare(ns, ps, cell="u1")
+
+    assert diff.unit_mismatches
+    mismatch = diff.unit_mismatches[0]
+    assert mismatch.dimension == "time"
+    assert mismatch.unit_a == "1ns"
+    assert mismatch.unit_b == "1ps"
+    assert mismatch.cell == "u1"
+    assert mismatch.pin == "z"
+    assert mismatch.table == "cell_rise"
+
+    # The table was not diffed at all: the two numbers mean different
+    # physical quantities, so no delta is reported.
+    assert diff.entries == []
+    assert diff.max_abs_delta() is None
+
+    assert diff.summary()["unit_mismatches"] == len(diff.unit_mismatches)
+
+
+def test_a_capacitive_load_unit_mismatch_is_reported(tmp_path: Path):
+    pf = lt.parse_file(_write(tmp_path, "pf.lib", PF_LIBRARY))
+    ff = lt.parse_file(_write(tmp_path, "ff.lib", FF_LIBRARY))
+
+    diff = lt.compare(pf, ff, cell="u1")
+
+    assert diff.unit_mismatches
+    assert {mismatch.dimension for mismatch in diff.unit_mismatches} == {
+        "capacitive_load"
+    }
+    mismatch = diff.unit_mismatches[0]
+    assert mismatch.unit_a == "1 pf"
+    assert mismatch.unit_b == "1 ff"
+    assert mismatch.table == "cell_rise"
+
+    assert diff.entries == []
+    assert diff.max_abs_delta() is None
+
+
+def test_a_capacitive_load_multiplier_mismatch_is_reported(tmp_path: Path):
+    one = lt.parse_file(_write(tmp_path, "one.lib", PF_LIBRARY))
+    thousand = lt.parse_file(
+        _write(
+            tmp_path,
+            "thousand.lib",
+            PF_LIBRARY.replace(
+                "capacitive_load_unit (1, pf);",
+                "capacitive_load_unit (1000, pf);",
+            ),
+        )
+    )
+
+    diff = lt.compare(one, thousand, cell="u1")
+
+    assert diff.unit_mismatches
+    mismatch = diff.unit_mismatches[0]
+    assert mismatch.dimension == "capacitive_load"
+    # The whole declaration is reported, so the difference is visible.
+    assert mismatch.unit_a == "1 pf"
+    assert mismatch.unit_b == "1000 pf"
+    assert mismatch.unit_a != mismatch.unit_b
+
+    assert diff.entries == []
+    assert diff.max_abs_delta() is None
+
+
+def test_libraries_with_the_same_units_are_compared_numerically(docs):
+    ours, theirs = docs
+
+    diff = lt.compare(ours, theirs, cell="u1")
+
+    assert diff.unit_mismatches == []
+    assert diff.summary()["unit_mismatches"] == 0
+    assert len(diff.entries) == 4
+    assert diff.max_abs_delta() == 5.0
