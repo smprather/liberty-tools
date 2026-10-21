@@ -438,6 +438,7 @@ class ArcKey:
     related_pin: str | None
     timing_type: str | None
     when: str | None
+    timing_sense: str | None
     def __init__(
         self,
         cell: str,
@@ -445,6 +446,7 @@ class ArcKey:
         related_pin: str | None,
         timing_type: str | None,
         when: str | None,
+        timing_sense: str | None = ...,
     ) -> None: ...
     def __str__(self) -> str: ...
 
@@ -464,6 +466,26 @@ class CompareEntry:
     axis_3: str | None
     value_a: float | None
     value_b: float | None
+    timing_sense: str | None
+    def __init__(
+        self,
+        cell: str,
+        pin: str,
+        related_pin: str | None,
+        timing_type: str | None,
+        when: str | None,
+        table: str,
+        index_1: float | None,
+        index_2: float | None,
+        index_3: float | None,
+        axis_1: str | None,
+        axis_2: str | None,
+        axis_3: str | None,
+        value_a: float | None,
+        value_b: float | None,
+        *,
+        timing_sense: str | None = ...,
+    ) -> None: ...
     @property
     def arc(self) -> str: ...
     @property
@@ -493,6 +515,18 @@ class Comparison:
     only_in_b_tables: list[tuple[ArcKey, str]]
     shape_mismatches: list[tuple[ArcKey, str, int, int]]
     unit_mismatches: list[UnitMismatch]
+    duplicate_arcs: list[ArcKey]
+    def __init__(
+        self,
+        entries: list[CompareEntry] = ...,
+        only_in_a: list[ArcKey] = ...,
+        only_in_b: list[ArcKey] = ...,
+        only_in_a_tables: list[tuple[ArcKey, str]] = ...,
+        only_in_b_tables: list[tuple[ArcKey, str]] = ...,
+        shape_mismatches: list[tuple[ArcKey, str, int, int]] = ...,
+        unit_mismatches: list[UnitMismatch] = ...,
+        duplicate_arcs: list[ArcKey] = ...,
+    ) -> None: ...
     def __len__(self) -> int: ...
     def __iter__(self) -> Iterator[CompareEntry]: ...
     @property

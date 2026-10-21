@@ -110,6 +110,153 @@ FF_LIBRARY = NS_LIBRARY.replace(
     'index_1 ("100, 200");',
 )
 
+# A cell whose output pin has two timing groups on the same related pin
+# that differ only in their timing sense: they are two different arcs.
+SENSE_LIBRARY = """
+library (sense_library) {
+  time_unit : "1ns";
+  capacitive_load_unit (1, pf);
+  lu_table_template (delay_template) {
+    variable_1 : total_output_net_capacitance;
+    variable_2 : input_net_transition;
+  }
+  cell (u1) {
+    area : 1.0;
+    pin (z) {
+      direction : output;
+      timing () {
+        related_pin : "a";
+        timing_sense : positive_unate;
+        cell_rise (delay_template) {
+          index_1 ("0.1, 0.2");
+          index_2 ("1, 2");
+          values ("10, 20, 30, 40");
+        }
+      }
+      timing () {
+        related_pin : "a";
+        timing_sense : negative_unate;
+        cell_rise (delay_template) {
+          index_1 ("0.1, 0.2");
+          index_2 ("1, 2");
+          values ("11, 21, 31, 41");
+        }
+      }
+    }
+    pin (a) {
+      direction : input;
+    }
+  }
+}
+"""
+
+# The same library, but the two timing groups are indistinguishable: they
+# have the same related pin, the same timing sense and no condition.
+DUPLICATE_LIBRARY = """
+library (duplicate_library) {
+  time_unit : "1ns";
+  capacitive_load_unit (1, pf);
+  lu_table_template (delay_template) {
+    variable_1 : total_output_net_capacitance;
+    variable_2 : input_net_transition;
+  }
+  cell (u1) {
+    area : 1.0;
+    pin (z) {
+      direction : output;
+      timing () {
+        related_pin : "a";
+        timing_sense : positive_unate;
+        cell_rise (delay_template) {
+          index_1 ("0.1, 0.2");
+          index_2 ("1, 2");
+          values ("10, 20, 30, 40");
+        }
+      }
+      timing () {
+        related_pin : "a";
+        timing_sense : positive_unate;
+        cell_rise (delay_template) {
+          index_1 ("0.1, 0.2");
+          index_2 ("1, 2");
+          values ("11, 21, 31, 41");
+        }
+      }
+    }
+    pin (a) {
+      direction : input;
+    }
+  }
+}
+"""
+
+# The same library, but one of its timing groups declares the default timing
+# type explicitly instead of leaving it out.
+TYPED_LIBRARY = OURS.replace(
+    """      timing () {
+        related_pin : "a";""",
+    """      timing () {
+        related_pin : "a";
+        timing_type : combinational;""",
+)
+
+# The same library, but one of its timing groups declares the default timing
+# sense explicitly instead of leaving it out.
+NON_UNATE_LIBRARY = OURS.replace(
+    """      timing () {
+        related_pin : "a";""",
+    """      timing () {
+        related_pin : "a";
+        timing_sense : non_unate;""",
+)
+
+# A malformed library with two `cell (u1)` groups: the cells of a document
+# are listed as they appear, so the name of this cell is reported twice.
+DUPLICATE_CELL_LIBRARY = """
+library (duplicate_cell_library) {
+  time_unit : "1ns";
+  capacitive_load_unit (1, pf);
+  lu_table_template (delay_template) {
+    variable_1 : total_output_net_capacitance;
+    variable_2 : input_net_transition;
+  }
+  cell (u1) {
+    area : 1.0;
+    pin (z) {
+      direction : output;
+      timing () {
+        related_pin : "a";
+        cell_rise (delay_template) {
+          index_1 ("0.1, 0.2");
+          index_2 ("1, 2");
+          values ("10, 20, 30, 40");
+        }
+      }
+    }
+    pin (a) {
+      direction : input;
+    }
+  }
+  cell (u1) {
+    area : 2.0;
+    pin (z) {
+      direction : output;
+      timing () {
+        related_pin : "a";
+        cell_rise (delay_template) {
+          index_1 ("0.1, 0.2");
+          index_2 ("1, 2");
+          values ("11, 21, 31, 41");
+        }
+      }
+    }
+    pin (a) {
+      direction : input;
+    }
+  }
+}
+"""
+
 
 def _write(tmp_path: Path, name: str, text: str) -> Path:
     path = tmp_path / name
@@ -512,3 +659,102 @@ def test_libraries_with_the_same_units_are_compared_numerically(docs):
     assert diff.summary()["unit_mismatches"] == 0
     assert len(diff.entries) == 4
     assert diff.max_abs_delta() == 5.0
+
+
+def test_arcs_that_differ_only_in_timing_sense_are_both_compared(tmp_path: Path):
+    path = _write(tmp_path, "sense.lib", SENSE_LIBRARY)
+    document = lt.parse_file(path)
+
+    diff = lt.compare(document, document, cell="u1")
+
+    # The two timing groups are two different arcs, so both are compared:
+    # four points each.
+    assert diff.only_in_a == []
+    assert diff.only_in_b == []
+    assert diff.duplicate_arcs == []
+    assert len(diff.entries) == 8
+    assert {entry.timing_sense for entry in diff.entries} == {
+        "positive_unate",
+        "negative_unate",
+    }
+    assert all(entry.matched for entry in diff.entries)
+    assert diff.mismatched == []
+
+
+def test_an_omitted_timing_type_matches_the_explicit_default(tmp_path: Path):
+    ours = lt.parse_file(_write(tmp_path, "ours.lib", OURS))
+    typed = lt.parse_file(_write(tmp_path, "typed.lib", TYPED_LIBRARY))
+
+    diff = lt.compare(ours, typed, cell="u1")
+
+    # `combinational` is the default timing type, so a library that leaves it
+    # out describes the same arc as one that spells it out.
+    assert diff.only_in_a == []
+    assert diff.only_in_b == []
+    assert len(diff.entries) == 4
+    assert all(entry.matched for entry in diff.entries)
+    assert diff.max_abs_delta() == 0.0
+
+
+def test_an_omitted_timing_sense_matches_the_explicit_default(tmp_path: Path):
+    ours = lt.parse_file(_write(tmp_path, "ours.lib", OURS))
+    explicit = lt.parse_file(_write(tmp_path, "explicit.lib", NON_UNATE_LIBRARY))
+
+    diff = lt.compare(ours, explicit, cell="u1")
+
+    # `non_unate` is the default timing sense, so a library that leaves it
+    # out describes the same arc as one that spells it out.
+    assert diff.only_in_a == []
+    assert diff.only_in_b == []
+    assert len(diff.entries) == 4
+    assert all(entry.matched for entry in diff.entries)
+    assert diff.max_abs_delta() == 0.0
+    assert {entry.timing_sense for entry in diff.entries} == {"non_unate"}
+
+
+def test_arcs_that_still_collide_are_reported_instead_of_overwritten(
+    tmp_path: Path,
+):
+    path = _write(tmp_path, "duplicate.lib", DUPLICATE_LIBRARY)
+    document = lt.parse_file(path)
+
+    diff = lt.compare(document, document, cell="u1")
+
+    # The two timing groups have the same identity, so neither of them can be
+    # told apart from the other: the collision is reported and no value is
+    # compared for them.
+    assert len(diff.duplicate_arcs) == 1
+    assert diff.duplicate_arcs[0].timing_sense == "positive_unate"
+    assert diff.duplicate_arcs[0].related_pin == "a"
+    assert diff.entries == []
+    assert diff.only_in_a == []
+    assert diff.only_in_b == []
+
+
+def test_a_cell_named_twice_is_not_an_identity_collision(docs):
+    ours, theirs = docs
+
+    diff = lt.compare(ours, theirs, cells=["u1"], cell="u1")
+
+    # Naming the same cell twice reads its arcs twice, which is not a
+    # collision: the comparison is the one of a single naming.
+    assert diff.duplicate_arcs == []
+    assert len(diff.entries) == 4
+    assert diff.entries == lt.compare(ours, theirs, cells=["u1"]).entries
+
+
+def test_a_library_with_two_cell_groups_of_the_same_name_is_still_compared(
+    tmp_path: Path,
+):
+    path = _write(tmp_path, "duplicate_cell.lib", DUPLICATE_CELL_LIBRARY)
+    document = lt.parse_file(path)
+
+    diff = lt.compare(document, document)
+
+    # The library lists the cell twice, but it is one cell: its arcs are
+    # compared, and the repetition is not reported as a collision.
+    assert document.cells() == ["u1", "u1"]
+    assert diff.duplicate_arcs == []
+    assert len(diff.entries) == 4
+    assert all(entry.matched for entry in diff.entries)
+

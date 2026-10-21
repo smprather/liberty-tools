@@ -44,16 +44,43 @@ _TIME_TABLE_NAMES = frozenset(
     }
 )
 
+#: The timing type an arc has when the library does not declare one:
+#: Liberty's default.
+_DEFAULT_TIMING_TYPE = "combinational"
+
+#: The timing sense an arc has when the library does not declare one:
+#: Liberty's default.
+_DEFAULT_TIMING_SENSE = "non_unate"
+
 
 @dataclass(frozen=True)
 class ArcKey:
-    """Identifies a timing arc inside a document."""
+    """Identifies a timing arc inside a document.
+
+    The identity is complete: two arcs with the same key are the same arc.
+    It covers the cell, the pin, the related pin, the timing type, the
+    timing sense and the condition.
+
+    A library that leaves the ``timing_type`` attribute out describes the
+    same arc as one that writes ``combinational`` — Liberty's default — so
+    the timing type is normalized here. The same holds for the timing
+    sense: an arc without one is ``non_unate``.
+    """
 
     cell: str
     pin: str
     related_pin: str | None
     timing_type: str | None
     when: str | None
+    #: The timing sense of the arc (``"positive_unate"`` and the like);
+    #: ``non_unate`` when the library declares none.
+    timing_sense: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.timing_type:
+            object.__setattr__(self, "timing_type", _DEFAULT_TIMING_TYPE)
+        if not self.timing_sense:
+            object.__setattr__(self, "timing_sense", _DEFAULT_TIMING_SENSE)
 
     def __str__(self) -> str:
         parts = [f"{self.cell}/{self.pin}"]
@@ -61,6 +88,8 @@ class ArcKey:
             parts.append(f"from {self.related_pin}")
         if self.timing_type:
             parts.append(f"({self.timing_type})")
+        if self.timing_sense:
+            parts.append(f"sense {self.timing_sense}")
         if self.when:
             parts.append(f"when {self.when}")
         return " ".join(parts)
@@ -86,6 +115,8 @@ class CompareEntry:
     axis_3: str | None
     value_a: float | None
     value_b: float | None
+    #: The timing sense of the arc this point belongs to.
+    timing_sense: str | None = field(default=None, kw_only=True)
 
     @property
     def arc(self) -> str:
@@ -96,6 +127,7 @@ class CompareEntry:
             self.related_pin,
             self.timing_type,
             self.when,
+            self.timing_sense,
         )
         return str(key)
 
@@ -108,6 +140,7 @@ class CompareEntry:
             self.related_pin,
             self.timing_type,
             self.when,
+            self.timing_sense,
         )
 
     @property
@@ -185,6 +218,9 @@ class Comparison:
     #: Tables that were not compared because the two documents declare
     #: different units for one of their dimensions.
     unit_mismatches: list[UnitMismatch] = field(default_factory=list)
+    #: Arcs whose identity is not unique: two arcs of the same document
+    #: cannot be told apart. Their values are not compared.
+    duplicate_arcs: list[ArcKey] = field(default_factory=list)
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -217,6 +253,7 @@ class Comparison:
             "only_in_b_arcs": len(self.only_in_b),
             "shape_mismatches": len(self.shape_mismatches),
             "unit_mismatches": len(self.unit_mismatches),
+            "duplicate_arcs": len(self.duplicate_arcs),
             "max_abs_delta": self.max_abs_delta(),
         }
 
@@ -230,6 +267,7 @@ class Comparison:
                 "pin": entry.pin,
                 "related_pin": entry.related_pin,
                 "timing_type": entry.timing_type,
+                "timing_sense": entry.timing_sense,
                 "when": entry.when,
                 "table": entry.table,
                 "axis_1": entry.axis_1,
@@ -262,11 +300,21 @@ def compare(
 ) -> Comparison:
     """Compare two Liberty documents.
 
-    Arcs are matched by pin, related pin and timing type; within such a group
-    the ``when`` conditions are matched by logical equivalence, so ``"A & B"``
-    in one library matches ``"B & A"`` in the other. A condition that is only
-    *implied* by the other describes a different arc, so those arcs are
-    reported as existing in only one of the documents rather than compared.
+    Arcs are matched by pin, related pin, timing type and timing sense;
+    within such a group the ``when`` conditions are matched by logical
+    equivalence, so ``"A & B"`` in one library matches ``"B & A"`` in the
+    other. A condition that is only *implied* by the other describes a
+    different arc, so those arcs are reported as existing in only one of the
+    documents rather than compared. A library that leaves the ``timing_type``
+    attribute out describes the same arc as one that writes ``combinational``,
+    Liberty's default, and a library that leaves the ``timing_sense`` out
+    describes the same arc as one that writes ``non_unate``.
+
+    Two arcs of the same document that share their whole identity cannot be
+    told apart. Such a collision is reported in
+    :attr:`Comparison.duplicate_arcs` and neither of the two arcs is
+    compared: picking one of them would compare values that do not
+    correspond.
 
     The tables of matched arcs are matched by name, and their grids are aligned
     by *axis role* rather than by position: the load axis of one library is
@@ -308,11 +356,23 @@ def compare(
         names = [cell] if names is None else [*names, cell]
     if names is None:
         names = a.cells()
+    # The same cell can be named twice: `cells=["u1"], cell="u1"` names it
+    # twice, and a malformed library can hold two groups of the same name.
+    # Reading its arcs twice is not an identity collision, so the names are
+    # deduplicated (the first occurrence wins) before the arcs are read.
+    names = list(dict.fromkeys(names))
 
-    arcs_a = _collect_arcs(a, names, pin)
-    arcs_b = _collect_arcs(b, names, pin)
+    arcs_a, duplicates_a = _collect_arcs(a, names, pin)
+    arcs_b, duplicates_b = _collect_arcs(b, names, pin)
 
-    result = Comparison()
+    # An arc whose identity is not unique cannot be matched to anything:
+    # it is excluded from both documents and reported instead.
+    duplicates = list(dict.fromkeys([*duplicates_a, *duplicates_b]))
+    for key in duplicates:
+        arcs_a.pop(key, None)
+        arcs_b.pop(key, None)
+
+    result = Comparison(duplicate_arcs=duplicates)
     units = _unit_context(a, b)
     matched_pairs, only_in_a, only_in_b = _match_arcs(arcs_a, arcs_b)
     result.only_in_a = only_in_a
@@ -502,9 +562,16 @@ def _collect_arcs(
     document: LibertyDocument,
     cells: Iterable[str],
     pin: str | None,
-) -> dict[ArcKey, TimingArc]:
-    """Every timing arc of the given cells, keyed by its identity."""
+) -> tuple[dict[ArcKey, TimingArc], list[ArcKey]]:
+    """Every timing arc of the given cells, keyed by its identity.
+
+    Two arcs whose identity is the same cannot be told apart, so the
+    collision is *reported* instead of resolved: the second arc does not
+    overwrite the first one, and neither of them is returned.
+    """
     arcs: dict[ArcKey, TimingArc] = {}
+    duplicates: list[ArcKey] = []
+    collided: set[ArcKey] = set()
     for cell_name in cells:
         try:
             cell = document.cell(cell_name)
@@ -520,9 +587,17 @@ def _collect_arcs(
                     arc.related_pin,
                     arc.timing_type,
                     arc.when,
+                    arc.timing_sense,
                 )
+                if key in collided:
+                    continue
+                if key in arcs:
+                    collided.add(key)
+                    duplicates.append(key)
+                    del arcs[key]
+                    continue
                 arcs[key] = arc
-    return arcs
+    return arcs, duplicates
 
 
 def _cell_arcs(cell: Any) -> dict[str, list[TimingArc]]:
@@ -581,7 +656,13 @@ def _match_arcs(
 
 def _arc_group(key: ArcKey) -> tuple:
     """The part of an arc's identity that does not depend on ``when``."""
-    return (key.cell, key.pin, key.related_pin, key.timing_type)
+    return (
+        key.cell,
+        key.pin,
+        key.related_pin,
+        key.timing_type,
+        key.timing_sense,
+    )
 
 
 def _match_when_conditions(
@@ -705,6 +786,7 @@ def _compare_table(
                     timing_type=key.timing_type,
                     when=key.when,
                     table=table_name,
+                    timing_sense=key.timing_sense,
                     index_1=point[0] if len(point) > 0 else None,
                     index_2=point[1] if len(point) > 1 else None,
                     index_3=point[2] if len(point) > 2 else None,
@@ -758,6 +840,7 @@ def _entry(
         timing_type=key.timing_type,
         when=key.when,
         table=table_name,
+        timing_sense=key.timing_sense,
         index_1=point[0] if len(point) > 0 else None,
         index_2=point[1] if len(point) > 1 else None,
         index_3=point[2] if len(point) > 2 else None,
