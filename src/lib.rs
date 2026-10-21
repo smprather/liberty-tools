@@ -1054,91 +1054,22 @@ impl Document {
 
     /// The Liberty source text of this document with every pending attribute
     /// edit applied. Unmodified regions are preserved byte for byte.
+    ///
+    /// Reading, hashing and lexing the source happens with the GIL released:
+    /// on a multi-gigabyte library it would otherwise block every other
+    /// Python thread.
     #[pyo3(name = "to_string")]
-    fn liberty_to_string(&self) -> PyResult<String> {
-        let source = self.read_source_text()?;
-        let edits = self
-            .edits
-            .lock()
-            .map_err(|_| PyValueError::new_err("document edit log is poisoned"))?;
-        if edits.is_empty() {
-            return Ok(source);
-        }
-        // Only the last edit of an attribute counts: applying two edits to the
-        // same span would make the second one land in the middle of the
-        // first one's text. The surviving edits keep the order they were made
-        // in, so the written file is deterministic.
-        let mut chosen: Vec<&AttrEdit> = Vec::new();
-        {
-            // Walk the log backwards and keep the first occurrence of every
-            // key; that is the last edit of the attribute. Reversing afterwards
-            // puts the survivors back in the order the edits were made in.
-            let mut seen: HashSet<EditKey> = HashSet::new();
-            for edit in edits.iter().rev() {
-                let key = (
-                    edit.cell.clone(),
-                    edit.pin.clone(),
-                    edit.container.clone(),
-                    edit.key.clone(),
-                );
-                if seen.insert(key) {
-                    chosen.push(edit);
-                }
-            }
-            chosen.reverse();
-        }
-        let mut by_cell: HashMap<&str, Vec<&AttrEdit>> = HashMap::new();
-        for edit in chosen {
-            by_cell.entry(edit.cell.as_str()).or_default().push(edit);
-        }
-        // Patch only the cell that `Document::cell` resolves to — the first
-        // cell of that name in the source. A second cell with the same name
-        // is a different cell and must not be rewritten.
-        let mut spans: Vec<&(String, usize, usize)> = Vec::new();
-        for cell_name in by_cell.keys() {
-            let span = self
-                .cell_spans
-                .iter()
-                .find(|(name, _, _)| name.as_str() == *cell_name)
-                .ok_or_else(|| {
-                    PyValueError::new_err(format!(
-                        "cell {cell_name:?} is not in the source text; its edits cannot be \
-                         written back"
-                    ))
-                })?;
-            spans.push(span);
-        }
-        // Patch from the last cell backwards so earlier offsets stay valid.
-        spans.sort_by_key(|(_, start, _)| std::cmp::Reverse(*start));
-        let mut text = source;
-        for (name, start, end) in spans {
-            let cell_text = text.get(*start..*end).ok_or_else(|| {
-                PyValueError::new_err(format!("cell {name:?} is outside the source text"))
-            })?;
-            let patched = patch_cell_text(cell_text, name, &by_cell[name.as_str()])?;
-            text.replace_range(*start..*end, &patched);
-        }
-        Ok(text)
+    fn liberty_to_string(&self, py: Python<'_>) -> PyResult<String> {
+        py.detach(move || self.render_source_text())
+            .map_err(WriteError::into_py)
     }
 
     /// Write the document (with pending edits applied) to `path`. A path ending
     /// in `.gz` is written gzip-compressed.
-    fn write(&self, path: &str) -> PyResult<()> {
-        let text = self.liberty_to_string()?;
-        let bytes = text.as_bytes();
-        if path.ends_with(".gz") {
-            let file = File::create(path).map_err(|err| PyValueError::new_err(err.to_string()))?;
-            let mut encoder = GzEncoder::new(file, flate2::Compression::default());
-            encoder
-                .write_all(bytes)
-                .map_err(|err| PyValueError::new_err(err.to_string()))?;
-            encoder
-                .finish()
-                .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        } else {
-            std::fs::write(path, bytes).map_err(|err| PyValueError::new_err(err.to_string()))?;
-        }
-        Ok(())
+    fn write(&self, py: Python<'_>, path: &str) -> PyResult<()> {
+        let path = path.to_string();
+        py.detach(move || self.write_to_path(&path))
+            .map_err(WriteError::into_py)
     }
 
     /// `normalized_driver_waveform` tables (index_1 = slew, index_2 = normalized
@@ -3042,10 +2973,26 @@ fn skip_to_semicolon(d: &[u8], mut i: usize) -> usize {
     i
 }
 
-/// Index every top-level `cell` group. Returns (library_name, preamble_start,
-/// preamble_end, [(cell_name, start, end)]). Lenient: a stray `}` that drops
+/// The top-level structure of a Liberty file, found by a byte-level scan.
+struct LibraryScan {
+    /// Name of the library group.
+    name: String,
+    /// Byte range of the library body before the first cell group.
+    preamble: (usize, usize),
+    /// Byte ranges of the top-level items that follow the first cell group
+    /// (units, templates, operating conditions, …), in source order.
+    late_items: Vec<(usize, usize)>,
+    /// (cell name, start, end) of every cell group.
+    cells: Vec<(String, usize, usize)>,
+}
+
+/// Index every top-level `cell` group. Lenient: a stray `}` that drops
 /// depth early does not stop cell discovery.
-fn index_cells(d: &[u8]) -> (String, usize, usize, Vec<(String, usize, usize)>) {
+///
+/// The scan also records the top-level items that follow the first cell:
+/// a library may declare its units or its lookup-table templates *after*
+/// the cells that use them, and `parse_file` resolves them there too.
+fn index_cells(d: &[u8]) -> LibraryScan {
     let n = d.len();
     let mut i = skip_trivia(d, 0);
     let (_kw, j) = read_token(d, i);
@@ -3061,6 +3008,8 @@ fn index_cells(d: &[u8]) -> (String, usize, usize, Vec<(String, usize, usize)>) 
     }
     let body_start = i;
     let mut cells = Vec::new();
+    // Byte ranges of the top-level items that are not cells.
+    let mut items: Vec<(usize, usize)> = Vec::new();
     let mut first_cell: Option<usize> = None;
     while i < n {
         i = skip_trivia(d, i);
@@ -3083,7 +3032,8 @@ fn index_cells(d: &[u8]) -> (String, usize, usize, Vec<(String, usize, usize)>) 
             i = skip_trivia(d, k);
             if i < n && d[i] == b'{' {
                 let end = match_braces(d, i);
-                if name == "cell" {
+                let is_cell = name == "cell";
+                if is_cell {
                     if first_cell.is_none() {
                         first_cell = Some(tok_start);
                     }
@@ -3094,17 +3044,36 @@ fn index_cells(d: &[u8]) -> (String, usize, usize, Vec<(String, usize, usize)>) 
                 if s < n && d[s] == b';' {
                     i = s + 1;
                 }
+                if !is_cell {
+                    items.push((tok_start, i));
+                }
             } else if i < n && d[i] == b';' {
                 i += 1;
+                items.push((tok_start, i));
             }
         } else if i < n && d[i] == b':' {
             i = skip_to_semicolon(d, i + 1);
+            items.push((tok_start, i));
         } else {
             i += 1;
         }
     }
     let header_end = first_cell.unwrap_or(i);
-    (lib_name, body_start, header_end, cells)
+    // The items before the first cell are part of the preamble already; only
+    // the ones after it have to be collected separately.
+    let late_items = match first_cell {
+        Some(start) => items
+            .into_iter()
+            .filter(|(item_start, _)| *item_start >= start)
+            .collect(),
+        None => Vec::new(),
+    };
+    LibraryScan {
+        name: lib_name,
+        preamble: (body_start, header_end),
+        late_items,
+        cells,
+    }
 }
 
 fn parse_slice_as_library(name: &str, body: &[u8]) -> Result<Document, ParseError> {
@@ -3222,12 +3191,24 @@ impl LibraryIndex {
 
 fn open_library_index(path: &str) -> Result<LibraryIndex, ParseLoadError> {
     let data = read_to_memory(path).map_err(ParseLoadError::Io)?;
-    let (lib_name, preamble_start, preamble_end, cells) = index_cells(&data);
-    let header = parse_slice_as_library(&lib_name, &data[preamble_start..preamble_end])
-        .map_err(ParseLoadError::Parse)?;
-    let mut order = Vec::with_capacity(cells.len());
-    let mut ranges = HashMap::with_capacity(cells.len());
-    for (name, start, end) in cells {
+    let scan = index_cells(&data);
+    // The library header is the preamble *and* the top-level items that
+    // follow the first cell: a library may declare its units or its
+    // lookup-table templates after the cells that use them, and the full
+    // parser resolves them there too.
+    let mut header_bytes = Vec::new();
+    header_bytes.extend_from_slice(&data[scan.preamble.0..scan.preamble.1]);
+    for (start, end) in &scan.late_items {
+        if !header_bytes.ends_with(b"\n") {
+            header_bytes.push(b'\n');
+        }
+        header_bytes.extend_from_slice(&data[*start..*end]);
+    }
+    let header =
+        parse_slice_as_library(&scan.name, &header_bytes).map_err(ParseLoadError::Parse)?;
+    let mut order = Vec::with_capacity(scan.cells.len());
+    let mut ranges = HashMap::with_capacity(scan.cells.len());
+    for (name, start, end) in scan.cells {
         if !ranges.contains_key(&name) {
             order.push(name.clone());
         }
@@ -3235,7 +3216,7 @@ fn open_library_index(path: &str) -> Result<LibraryIndex, ParseLoadError> {
     }
     Ok(LibraryIndex {
         data,
-        library_name: lib_name,
+        library_name: scan.name,
         order,
         ranges,
         header,
@@ -4835,24 +4816,133 @@ impl Document {
             .map(|(_, attributes)| attributes)
     }
 
-    /// Read the original source text, verifying that the file has not changed
-    /// since the document was parsed.
-    fn read_source_text(&self) -> PyResult<String> {
-        let path = self.source_path.as_ref().ok_or_else(|| {
-            PyValueError::new_err(
-                "this document has no source file; only documents parsed from a \
-                 file can be written back",
-            )
-        })?;
-        let data = read_to_memory(path).map_err(|err| PyValueError::new_err(err.to_string()))?;
-        if data.len() != self.source_len || fnv1a(&data) != self.source_hash {
-            return Err(PyValueError::new_err(format!(
-                "source file {path:?} changed since it was parsed; re-parse it \
-                 before writing"
-            )));
-        }
-        String::from_utf8(data).map_err(|err| PyValueError::new_err(err.to_string()))
+    /// The source text with the pending edits applied.
+    ///
+    /// Pure Rust — no Python token is involved — so the caller can run it
+    /// with the GIL released.
+    fn render_source_text(&self) -> Result<String, WriteError> {
+        let source = read_source_text(
+            self.source_path.as_deref(),
+            self.source_len,
+            self.source_hash,
+        )?;
+        let edits = self.edits.lock().map_err(|_| WriteError::Poisoned)?;
+        apply_edits_to_source(source, &self.cell_spans, &edits)
     }
+
+    /// Write the rendered document to `path` (gzip-compressed when the path
+    /// ends in `.gz`).
+    ///
+    /// Pure Rust — no Python token is involved — so the caller can run it
+    /// with the GIL released.
+    fn write_to_path(&self, path: &str) -> Result<(), WriteError> {
+        let text = self.render_source_text()?;
+        let bytes = text.as_bytes();
+        if path.ends_with(".gz") {
+            let file = File::create(path).map_err(|err| WriteError::Io(err.to_string()))?;
+            let mut encoder = GzEncoder::new(file, flate2::Compression::default());
+            encoder
+                .write_all(bytes)
+                .map_err(|err| WriteError::Io(err.to_string()))?;
+            encoder
+                .finish()
+                .map_err(|err| WriteError::Io(err.to_string()))?;
+        } else {
+            std::fs::write(path, bytes).map_err(|err| WriteError::Io(err.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
+/// Read the original source text of a document, verifying that the file has
+/// not changed since it was parsed.
+///
+/// Pure Rust: it takes no Python token, so the caller can run it with the GIL
+/// released.
+fn read_source_text(
+    source_path: Option<&str>,
+    source_len: usize,
+    source_hash: u64,
+) -> Result<String, WriteError> {
+    let path = source_path.ok_or(WriteError::NoSource)?;
+    let data = read_to_memory(path).map_err(|err| WriteError::Io(err.to_string()))?;
+    if data.len() != source_len || fnv1a(&data) != source_hash {
+        return Err(WriteError::Changed(format!(
+            "source file {path:?} changed since it was parsed; re-parse it before writing"
+        )));
+    }
+    String::from_utf8(data).map_err(|err| WriteError::Io(err.to_string()))
+}
+
+/// Apply the pending attribute edits to the source text of a document.
+///
+/// Only the cells that were edited are re-written; every other byte of the
+/// source is kept as it is.
+///
+/// Pure Rust: it takes no Python token, so the caller can run it with the GIL
+/// released.
+fn apply_edits_to_source(
+    source: String,
+    cell_spans: &[(String, usize, usize)],
+    edits: &[AttrEdit],
+) -> Result<String, WriteError> {
+    if edits.is_empty() {
+        return Ok(source);
+    }
+    // Only the last edit of an attribute counts: applying two edits to the
+    // same span would make the second one land in the middle of the
+    // first one's text. The surviving edits keep the order they were made
+    // in, so the written file is deterministic.
+    let mut chosen: Vec<&AttrEdit> = Vec::new();
+    {
+        // Walk the log backwards and keep the first occurrence of every
+        // key; that is the last edit of the attribute. Reversing afterwards
+        // puts the survivors back in the order the edits were made in.
+        let mut seen: HashSet<EditKey> = HashSet::new();
+        for edit in edits.iter().rev() {
+            let key = (
+                edit.cell.clone(),
+                edit.pin.clone(),
+                edit.container.clone(),
+                edit.key.clone(),
+            );
+            if seen.insert(key) {
+                chosen.push(edit);
+            }
+        }
+        chosen.reverse();
+    }
+    let mut by_cell: HashMap<&str, Vec<&AttrEdit>> = HashMap::new();
+    for edit in chosen {
+        by_cell.entry(edit.cell.as_str()).or_default().push(edit);
+    }
+    // Patch only the cell that `Document::cell` resolves to — the first
+    // cell of that name in the source. A second cell with the same name
+    // is a different cell and must not be rewritten.
+    let mut spans: Vec<&(String, usize, usize)> = Vec::new();
+    for cell_name in by_cell.keys() {
+        let span = cell_spans
+            .iter()
+            .find(|(name, _, _)| name.as_str() == *cell_name)
+            .ok_or_else(|| {
+                WriteError::Invalid(format!(
+                    "cell {cell_name:?} is not in the source text; its edits cannot be \
+                     written back"
+                ))
+            })?;
+        spans.push(span);
+    }
+    // Patch from the last cell backwards so earlier offsets stay valid.
+    spans.sort_by_key(|(_, start, _)| std::cmp::Reverse(*start));
+    let mut text = source;
+    for (name, start, end) in spans {
+        let cell_text = text.get(*start..*end).ok_or_else(|| {
+            WriteError::Invalid(format!("cell {name:?} is outside the source text"))
+        })?;
+        let patched = patch_cell_text(cell_text, name, &by_cell[name.as_str()])?;
+        text.replace_range(*start..*end, &patched);
+    }
+    Ok(text)
 }
 
 impl Cell {
@@ -5048,11 +5138,10 @@ struct SourceAttribute {
 }
 
 /// Scan one cell group's source text and return its groups and attributes.
-fn scan_source_groups(text: &str) -> PyResult<(Vec<SourceGroup>, Vec<SourceAttribute>)> {
-    let mut lexer = Lexer::new(Box::new(io::Cursor::new(text.as_bytes().to_vec())))
-        .map_err(ParseError::into_py)?;
+fn scan_source_groups(text: &str) -> Result<(Vec<SourceGroup>, Vec<SourceAttribute>), ParseError> {
+    let mut lexer = Lexer::new(Box::new(io::Cursor::new(text.as_bytes().to_vec())))?;
     let mut tokens = Vec::new();
-    while let Some(token) = lexer.next_token().map_err(ParseError::into_py)? {
+    while let Some(token) = lexer.next_token()? {
         tokens.push(token);
     }
     if tokens.is_empty() {
@@ -5209,7 +5298,7 @@ fn resolve_pin_group(
     cell_name: &str,
     pin: &str,
     container: Option<&(ContainerKind, String)>,
-) -> PyResult<usize> {
+) -> Result<usize, String> {
     let candidates: Vec<usize> = groups
         .iter()
         .enumerate()
@@ -5219,15 +5308,13 @@ fn resolve_pin_group(
     let Some((kind, container_name)) = container else {
         return match candidates.len() {
             1 => Ok(candidates[0]),
-            0 => Err(PyValueError::new_err(format!(
-                "cell {cell_name:?} has no pin {pin:?} to edit"
-            ))),
-            _ => Err(PyValueError::new_err(format!(
+            0 => Err(format!("cell {cell_name:?} has no pin {pin:?} to edit")),
+            _ => Err(format!(
                 "cell {cell_name:?} has {} pins named {pin:?} ({}); the edit does not say \
                  which one to patch",
                 candidates.len(),
                 describe_pin_locations(groups, &candidates)
-            ))),
+            )),
         };
     };
     let container_group = groups
@@ -5236,10 +5323,10 @@ fn resolve_pin_group(
             group.keyword == kind.keyword() && group.arg.as_deref() == Some(container_name.as_str())
         })
         .ok_or_else(|| {
-            PyValueError::new_err(format!(
+            format!(
                 "cell {cell_name:?} has no {} {container_name:?} to edit",
                 kind.keyword()
-            ))
+            )
         })?;
     let inside: Vec<usize> = candidates
         .iter()
@@ -5251,16 +5338,16 @@ fn resolve_pin_group(
         .collect();
     match inside.len() {
         1 => Ok(inside[0]),
-        0 => Err(PyValueError::new_err(format!(
+        0 => Err(format!(
             "cell {cell_name:?} has no pin {pin:?} in {} {container_name:?} to edit",
             kind.keyword()
-        ))),
-        _ => Err(PyValueError::new_err(format!(
+        )),
+        _ => Err(format!(
             "cell {cell_name:?} has {} pins named {pin:?} in {} {container_name:?}; the edit \
              does not say which one to patch",
             inside.len(),
             kind.keyword()
-        ))),
+        )),
     }
 }
 
@@ -5293,14 +5380,18 @@ fn describe_pin_locations(groups: &[SourceGroup], candidates: &[usize]) -> Strin
 /// Every edit is turned into a `(start, end, text)` range against the
 /// *original* text — an insertion is an empty range — and all of them are
 /// applied in a single back-to-front pass, so no edit can shift another.
-fn patch_cell_text(cell_text: &str, cell_name: &str, edits: &[&AttrEdit]) -> PyResult<String> {
-    let (groups, attributes) = scan_source_groups(cell_text)?;
+fn patch_cell_text(
+    cell_text: &str,
+    cell_name: &str,
+    edits: &[&AttrEdit],
+) -> Result<String, WriteError> {
+    let (groups, attributes) = scan_source_groups(cell_text).map_err(WriteError::Parse)?;
 
     let cell_group = groups
         .iter()
         .position(|group| group.keyword == "cell")
         .ok_or_else(|| {
-            PyValueError::new_err(format!(
+            WriteError::Invalid(format!(
                 "cell {cell_name:?} has no cell group in the source"
             ))
         })?;
@@ -5311,7 +5402,8 @@ fn patch_cell_text(cell_text: &str, cell_name: &str, edits: &[&AttrEdit]) -> PyR
     for (order, edit) in edits.iter().enumerate() {
         let target_group = match &edit.pin {
             None => cell_group,
-            Some(pin) => resolve_pin_group(&groups, cell_name, pin, edit.container.as_ref())?,
+            Some(pin) => resolve_pin_group(&groups, cell_name, pin, edit.container.as_ref())
+                .map_err(WriteError::Invalid)?,
         };
         let existing = attributes
             .iter()
@@ -5590,6 +5682,42 @@ impl CellSourceError {
     fn into_py(self) -> PyErr {
         match self {
             Self::Unknown(name) => PyKeyError::new_err(format!("unknown cell {name:?}")),
+        }
+    }
+}
+
+/// Failure of the writer path.
+///
+/// The writer runs with the GIL released, so it cannot build a `PyErr`
+/// itself: it reports the failure with this plain enum and the caller
+/// converts it to a `PyErr` outside the detached closure.
+enum WriteError {
+    /// The document was not parsed from a file.
+    NoSource,
+    /// The source file could not be read or written.
+    Io(String),
+    /// The source file changed since the document was parsed.
+    Changed(String),
+    /// The document's edit log is poisoned.
+    Poisoned,
+    /// An edit does not apply to the source text.
+    Invalid(String),
+    /// The source text could not be lexed.
+    Parse(ParseError),
+}
+
+impl WriteError {
+    fn into_py(self) -> PyErr {
+        match self {
+            Self::NoSource => PyValueError::new_err(
+                "this document has no source file; only documents parsed from a \
+                 file can be written back",
+            ),
+            Self::Io(message) => PyValueError::new_err(message),
+            Self::Changed(message) => PyValueError::new_err(message),
+            Self::Poisoned => PyValueError::new_err("document edit log is poisoned"),
+            Self::Invalid(message) => PyValueError::new_err(message),
+            Self::Parse(err) => err.into_py(),
         }
     }
 }

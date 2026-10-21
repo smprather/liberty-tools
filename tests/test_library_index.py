@@ -1,0 +1,78 @@
+"""LibraryIndex must resolve the library items that are declared after the
+first cell, exactly like a full ``parse_file`` does."""
+
+from pathlib import Path
+
+import pytest
+
+import liberty_tools as lt
+
+# The units and the lookup-table template are declared *after* the cell that
+# uses them — legal Liberty, and the full parser resolves them.
+LATE_ITEMS = """
+library (late_lib) {
+  cell (u1) {
+    area : 1.0;
+    pin (a) {
+      direction : input;
+      capacitance : 0.5;
+    }
+    pin (z) {
+      direction : output;
+      timing () {
+        related_pin : "a";
+        cell_rise (t) {
+          index_1 ("1, 2");
+          index_2 ("3, 4");
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+      }
+    }
+  }
+  capacitive_load_unit (1, pf);
+  lu_table_template (t) {
+    variable_1 : input_net_transition;
+    variable_2 : total_output_net_capacitance;
+  }
+}
+"""
+
+
+def _write(tmp_path: Path) -> Path:
+    path = tmp_path / "late.lib"
+    path.write_text(LATE_ITEMS, encoding="utf-8")
+    return path
+
+
+def test_index_resolves_units_and_templates_declared_after_the_cell(tmp_path: Path):
+    path = _write(tmp_path)
+
+    cell = lt.LibraryIndex.open(path).cell("u1")
+
+    # The library declares picofarads after the cell that uses them.
+    assert cell.pin("a").capacitance_farads == pytest.approx(0.5e-12)
+    # ... and the lookup-table template after the cell that uses it.
+    table = cell.pin("z").timing_arcs()[0].table("cell_rise")
+    assert table.axis_roles() == [
+        "input_net_transition",
+        "total_output_net_capacitance",
+    ]
+
+
+def test_index_agrees_with_a_full_parse_on_late_items(tmp_path: Path):
+    path = _write(tmp_path)
+
+    index = lt.LibraryIndex.open(path)
+    doc = lt.parse_file(path)
+
+    assert index.capacitive_load_unit == doc.capacitive_load_unit
+    assert index.templates() == doc.templates()
+    assert (
+        index.cell("u1").pin("a").capacitance_farads
+        == doc.cell("u1").pin("a").capacitance_farads
+    )
+    assert index.cell("u1").pin("z").timing_arcs()[0].table(
+        "cell_rise"
+    ).axis_roles() == doc.cell("u1").pin("z").timing_arcs()[0].table(
+        "cell_rise"
+    ).axis_roles()

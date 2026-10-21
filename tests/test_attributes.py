@@ -2,6 +2,7 @@
 (issues #3 and #5)."""
 
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -257,3 +258,45 @@ library (both_mpw) {
     assert width.source == "attribute"
     assert width.high == 0.5
     assert width.low == 0.6
+
+
+def test_concurrent_to_string_and_parse(tmp_path: Path):
+    """`to_string()` must not block the other Python threads.
+
+    It reads, hashes and lexes the whole source file; that work must run
+    with the GIL released, so a parse in another thread finishes while the
+    writer is still going.
+    """
+    library = tmp_path / "concurrent.lib"
+    library.write_text(LIBRARY, encoding="utf-8")
+    other = tmp_path / "other.lib"
+    other.write_text(LIBRARY, encoding="utf-8")
+    doc = lt.parse_file(library)
+
+    texts: list[str] = []
+    errors: list[BaseException] = []
+
+    def writer() -> None:
+        try:
+            for _ in range(25):
+                texts.append(doc.to_string())
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+
+    def reader() -> None:
+        try:
+            for _ in range(25):
+                lt.parse_file(other)
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer), threading.Thread(target=reader)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert len(texts) == 25
+    assert all(text == LIBRARY for text in texts)
