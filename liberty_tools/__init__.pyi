@@ -507,6 +507,14 @@ class UnitMismatch:
     unit_b: str | None
 
 
+class AxisRoleMismatch:
+    cell: str
+    pin: str
+    table: str
+    roles_a: tuple[str | None, ...]
+    roles_b: tuple[str | None, ...]
+
+
 class Comparison:
     entries: list[CompareEntry]
     only_in_a: list[ArcKey]
@@ -515,6 +523,7 @@ class Comparison:
     only_in_b_tables: list[tuple[ArcKey, str]]
     shape_mismatches: list[tuple[ArcKey, str, int, int]]
     unit_mismatches: list[UnitMismatch]
+    axis_role_mismatches: list[AxisRoleMismatch]
     duplicate_arcs: list[ArcKey]
     def __init__(
         self,
@@ -525,6 +534,7 @@ class Comparison:
         only_in_b_tables: list[tuple[ArcKey, str]] = ...,
         shape_mismatches: list[tuple[ArcKey, str, int, int]] = ...,
         unit_mismatches: list[UnitMismatch] = ...,
+        axis_role_mismatches: list[AxisRoleMismatch] = ...,
         duplicate_arcs: list[ArcKey] = ...,
     ) -> None: ...
     def __len__(self) -> int: ...
@@ -533,6 +543,10 @@ class Comparison:
     def matched(self) -> list[CompareEntry]: ...
     @property
     def mismatched(self) -> list[CompareEntry]: ...
+    @property
+    def unmatched(self) -> list[CompareEntry]: ...
+    @property
+    def has_differences(self) -> bool: ...
     def max_abs_delta(self) -> float | None: ...
     def summary(self) -> dict[str, Any]: ...
     def to_polars(self) -> Any: ...

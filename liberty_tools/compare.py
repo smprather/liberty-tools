@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ArcKey",
+    "AxisRoleMismatch",
     "CompareEntry",
     "Comparison",
     "UnitMismatch",
@@ -198,6 +199,35 @@ class UnitMismatch:
     unit_b: str | None
 
 
+@dataclass(frozen=True)
+class AxisRoleMismatch:
+    """A table that was not compared because the two libraries name its axes
+    differently.
+
+    The axes of a table are named by the template of its library: the load
+    axis of one library can be called ``total_output_net_capacitance`` and
+    the one of the other ``output_capacitance``. When the two libraries name
+    the axes of a table differently *and* no role of one side has a
+    counterpart in the other, the grids cannot be aligned: matching the axes
+    by position would compare a load with a transition, and the deltas would
+    be plausible and wrong. Such a table is reported instead of diffed.
+
+    ``roles_a`` and ``roles_b`` hold the axis names of each side, in axis
+    order.
+    """
+
+    #: The cell the table belongs to.
+    cell: str
+    #: The pin the table belongs to.
+    pin: str
+    #: The name of the table.
+    table: str
+    #: The axis names of the first document, in axis order.
+    roles_a: tuple[str | None, ...]
+    #: The axis names of the second document, in axis order.
+    roles_b: tuple[str | None, ...]
+
+
 @dataclass
 class Comparison:
     """The result of :func:`compare`."""
@@ -218,6 +248,10 @@ class Comparison:
     #: Tables that were not compared because the two documents declare
     #: different units for one of their dimensions.
     unit_mismatches: list[UnitMismatch] = field(default_factory=list)
+    #: Tables that were not compared because the two documents name their
+    #: axes differently and no role of one side has a counterpart in the
+    #: other.
+    axis_role_mismatches: list[AxisRoleMismatch] = field(default_factory=list)
     #: Arcs whose identity is not unique: two arcs of the same document
     #: cannot be told apart. Their values are not compared.
     duplicate_arcs: list[ArcKey] = field(default_factory=list)
@@ -238,23 +272,61 @@ class Comparison:
         """The matched entries whose values differ."""
         return [entry for entry in self.matched if entry.delta not in (0.0, -0.0)]
 
+    @property
+    def unmatched(self) -> list[CompareEntry]:
+        """The entries where only one of the two documents has a value."""
+        return [entry for entry in self.entries if not entry.matched]
+
+    @property
+    def has_differences(self) -> bool:
+        """Do the two documents differ in any way?
+
+        True when the comparison found a difference of any kind: points whose
+        values differ, points that exist in only one grid, arcs or tables
+        that exist in only one document, tables whose grids have a different
+        shape, tables that were not compared because of a unit or an axis
+        role mismatch, and arcs whose identity is not unique.
+        """
+        return bool(
+            self.mismatched
+            or self.unmatched
+            or self.only_in_a
+            or self.only_in_b
+            or self.only_in_a_tables
+            or self.only_in_b_tables
+            or self.shape_mismatches
+            or self.unit_mismatches
+            or self.axis_role_mismatches
+            or self.duplicate_arcs
+        )
+
     def max_abs_delta(self) -> float | None:
         """The largest absolute delta over the matched entries."""
         deltas = [abs(entry.delta) for entry in self.matched if entry.delta is not None]
         return max(deltas) if deltas else None
 
     def summary(self) -> dict[str, Any]:
-        """Counts and the worst delta, for a quick report."""
+        """Counts and the worst delta, for a quick report.
+
+        Every kind of difference is counted, so that a consumer gating on
+        ``summary()["has_differences"]`` cannot read a missing table or an
+        incomparable table as "the libraries are the same".
+        """
         return {
             "entries": len(self.entries),
             "matched": len(self.matched),
             "mismatched": len(self.mismatched),
+            "unmatched": len(self.unmatched),
             "only_in_a_arcs": len(self.only_in_a),
             "only_in_b_arcs": len(self.only_in_b),
+            "only_in_a_tables": len(self.only_in_a_tables),
+            "only_in_b_tables": len(self.only_in_b_tables),
             "shape_mismatches": len(self.shape_mismatches),
             "unit_mismatches": len(self.unit_mismatches),
+            "axis_role_mismatches": len(self.axis_role_mismatches),
             "duplicate_arcs": len(self.duplicate_arcs),
             "max_abs_delta": self.max_abs_delta(),
+            "has_differences": self.has_differences,
         }
 
     def to_polars(self):
@@ -321,6 +393,12 @@ def compare(
     matched against the load axis of the other even when the two files store
     them in a different order. When the roles are unknown the axes are matched
     by position.
+
+    When the roles are known on both sides but do not correspond — the load
+    axis of one library against the transition axis of the other — there is
+    nothing to align the grids on, and matching the axes by position would
+    compare different quantities. Such a table is not diffed: it is reported
+    in :attr:`Comparison.axis_role_mismatches` instead.
 
     By default only the points that exist in both grids are reported. With
     ``interpolate=True`` the second document is interpolated onto the first
@@ -429,6 +507,7 @@ def compare(
                             tolerance=tolerance,
                             unit_context=units,
                             unit_mismatches=result.unit_mismatches,
+                            axis_role_mismatches=result.axis_role_mismatches,
                         )
                     )
                 continue
@@ -443,6 +522,7 @@ def compare(
                     tolerance=tolerance,
                     unit_context=units,
                     unit_mismatches=result.unit_mismatches,
+                    axis_role_mismatches=result.axis_role_mismatches,
                 )
             )
     return result
@@ -736,12 +816,15 @@ def _compare_table(
     tolerance: float,
     unit_context: _UnitContext | None = None,
     unit_mismatches: list[UnitMismatch] | None = None,
+    axis_role_mismatches: list[AxisRoleMismatch] | None = None,
 ) -> list[CompareEntry]:
     """Compare one pair of tables.
 
     A table that depends on a unit dimension the two documents declare
     differently is not compared: its numbers would mean different physical
-    quantities, so the mismatch is reported instead.
+    quantities, so the mismatch is reported instead. The same holds for a
+    table whose axes the two documents name differently: matching the axes
+    by position would compare different quantities.
     """
     if unit_context is not None:
         differing = sorted(
@@ -771,6 +854,22 @@ def _compare_table(
     # values are permuted with the axes: the flat list is row-major over the
     # table's own axis order.
     order_b = _axis_order(roles_a, roles_b, len(axes_a), len(axes_b))
+    if order_b is None:
+        # The two tables name their axes differently and no role of one side
+        # has a counterpart in the other: matching the axes by position
+        # would compare a load with a transition. The table is reported
+        # instead of diffed.
+        if axis_role_mismatches is not None:
+            axis_role_mismatches.append(
+                AxisRoleMismatch(
+                    cell=key.cell,
+                    pin=key.pin,
+                    table=table_name,
+                    roles_a=tuple(roles_a),
+                    roles_b=tuple(roles_b),
+                )
+            )
+        return []
     axes_b_ordered = [axes_b[index] for index in order_b]
     values_b = _permute_values(axes_b, order_b, table_b.values)
 
@@ -866,10 +965,16 @@ def _axis_order(
     roles_b: Sequence[str | None],
     count_a: int,
     count_b: int,
-) -> list[int]:
+) -> list[int] | None:
     """Map b's axes onto a's axes, by role when the roles are known.
 
-    Returns the indices of b's axes, in a's axis order.
+    Returns the indices of b's axes, in a's axis order, or None when the
+    roles are known on both sides but do not correspond: a role of one table
+    has no counterpart in the other, so the axes cannot be aligned and
+    matching them by position would compare different quantities.
+
+    When the roles are unknown — on either side — the axes are matched by
+    position, which is all that can be done then.
     """
     if count_a != count_b:
         return list(range(count_b))
@@ -883,7 +988,9 @@ def _axis_order(
                     order.append(index)
                     break
             else:
-                return list(range(count_b))
+                # A role that is known on both sides has no counterpart:
+                # the two tables do not describe the same quantities.
+                return None
         return order
     return list(range(count_b))
 

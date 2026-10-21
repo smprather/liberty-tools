@@ -258,6 +258,67 @@ library (duplicate_cell_library) {
 """
 
 
+# Two libraries whose tables name their axes differently: the first names
+# the load and the input transition, the second names the transition of the
+# related pin and of the constrained pin. No axis of one library has a
+# counterpart in the other, so the two grids cannot be aligned by role.
+ROLE_LIBRARY_A = """
+library (role_a) {
+  time_unit : "1ns";
+  capacitive_load_unit (1, pf);
+  lu_table_template (delay_template) {
+    variable_1 : total_output_net_capacitance;
+    variable_2 : input_net_transition;
+  }
+  cell (u1) {
+    area : 1.0;
+    pin (z) {
+      direction : output;
+      timing () {
+        related_pin : "a";
+        cell_rise (delay_template) {
+          index_1 ("0.1, 0.2");
+          index_2 ("1, 2");
+          values ("10, 20, 30, 40");
+        }
+      }
+    }
+    pin (a) {
+      direction : input;
+    }
+  }
+}
+"""
+
+ROLE_LIBRARY_B = """
+library (role_b) {
+  time_unit : "1ns";
+  capacitive_load_unit (1, pf);
+  lu_table_template (delay_template) {
+    variable_1 : related_pin_transition;
+    variable_2 : constrained_pin_transition;
+  }
+  cell (u1) {
+    area : 1.0;
+    pin (z) {
+      direction : output;
+      timing () {
+        related_pin : "a";
+        cell_rise (delay_template) {
+          index_1 ("0.1, 0.2");
+          index_2 ("1, 2");
+          values ("10, 20, 30, 40");
+        }
+      }
+    }
+    pin (a) {
+      direction : input;
+    }
+  }
+}
+"""
+
+
 def _write(tmp_path: Path, name: str, text: str) -> Path:
     path = tmp_path / name
     path.write_text(text, encoding="utf-8")
@@ -729,6 +790,89 @@ def test_arcs_that_still_collide_are_reported_instead_of_overwritten(
     assert diff.entries == []
     assert diff.only_in_a == []
     assert diff.only_in_b == []
+
+
+def test_tables_with_incompatible_axis_roles_are_reported_instead_of_compared(
+    tmp_path: Path,
+):
+    a = lt.parse_file(_write(tmp_path, "a.lib", ROLE_LIBRARY_A))
+    b = lt.parse_file(_write(tmp_path, "b.lib", ROLE_LIBRARY_B))
+
+    diff = lt.compare(a, b, cell="u1")
+
+    # The roles of the two libraries do not correspond: the first names a
+    # load and an input transition, the second a related-pin and a
+    # constrained-pin transition. Comparing the axes by position would
+    # compare a load with a transition, so the table is reported instead.
+    assert len(diff.axis_role_mismatches) == 1
+    mismatch = diff.axis_role_mismatches[0]
+    assert mismatch.cell == "u1"
+    assert mismatch.pin == "z"
+    assert mismatch.table == "cell_rise"
+    assert mismatch.roles_a == (
+        "total_output_net_capacitance",
+        "input_net_transition",
+    )
+    assert mismatch.roles_b == (
+        "related_pin_transition",
+        "constrained_pin_transition",
+    )
+
+    # The table was not diffed at all: no delta is reported.
+    assert diff.entries == []
+    assert diff.max_abs_delta() is None
+
+    assert diff.summary()["axis_role_mismatches"] == 1
+    assert diff.summary()["has_differences"] is True
+
+
+def test_a_table_that_exists_only_in_one_library_is_a_difference(tmp_path: Path):
+    with_fall = OURS.replace(
+        """        cell_rise (delay_template) {
+          index_1 ("0.1, 0.2");
+          index_2 ("1, 2");
+          values ("10, 20, 30, 40");
+        }
+""",
+        """        cell_rise (delay_template) {
+          index_1 ("0.1, 0.2");
+          index_2 ("1, 2");
+          values ("10, 20, 30, 40");
+        }
+        cell_fall (delay_template) {
+          index_1 ("0.1, 0.2");
+          index_2 ("1, 2");
+          values ("11, 21, 31, 41");
+        }
+""",
+    )
+    ours = lt.parse_file(_write(tmp_path, "ours.lib", with_fall))
+    theirs = lt.parse_file(_write(tmp_path, "theirs.lib", OURS))
+
+    diff = lt.compare(ours, theirs, cell="u1")
+
+    assert [name for _key, name in diff.only_in_a_tables] == ["cell_fall"]
+    assert diff.only_in_b_tables == []
+
+    # The table both libraries have is identical, so the count of mismatched
+    # points reads as "no difference" ...
+    assert diff.summary()["mismatched"] == 0
+    # ... but a whole table is missing, which is a difference.
+    assert diff.summary()["only_in_a_tables"] == 1
+    assert diff.summary()["has_differences"] is True
+
+
+def test_has_differences_is_false_for_two_equal_libraries(tmp_path: Path):
+    path = _write(tmp_path, "ours.lib", OURS)
+    ours = lt.parse_file(path)
+    theirs = lt.parse_file(path)
+
+    diff = lt.compare(ours, theirs, cell="u1")
+
+    assert diff.entries
+    assert diff.mismatched == []
+    assert diff.has_differences is False
+    assert diff.summary()["has_differences"] is False
 
 
 def test_a_cell_named_twice_is_not_an_identity_collision(docs):

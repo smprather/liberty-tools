@@ -5,7 +5,14 @@ from pathlib import Path
 from typing import Any
 
 from . import _native
-from .compare import ArcKey, CompareEntry, Comparison, UnitMismatch, compare
+from .compare import (
+    ArcKey,
+    AxisRoleMismatch,
+    CompareEntry,
+    Comparison,
+    UnitMismatch,
+    compare,
+)
 
 
 @dataclass(frozen=True)
@@ -1228,6 +1235,7 @@ def parse_file(path: str | Path, **filters: Any) -> LibertyDocument:
 
 __all__ = [
     "ArcKey",
+    "AxisRoleMismatch",
     "BooleanExpression",
     "Cell",
     "Bus",
