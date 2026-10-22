@@ -10,9 +10,11 @@
 Both are installed with the package:
 
 ```bash
-uv tool install liberty-tools          # from a release
 uv tool install "liberty-tools @ git+https://github.com/smprather/liberty-tools.git"
 ```
+
+The `liberty-tools` name on PyPI belongs to an unrelated project, and no
+wheels are published for this one yet — install it from the repository.
 
 In a checkout of the repository, run them through `uv run`:
 
