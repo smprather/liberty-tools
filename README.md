@@ -396,7 +396,10 @@ diff.has_differences       # True when the two libraries differ in any way
 - A document that holds **several cell groups with the same name** is
   malformed: only the first group of a name can be addressed, so that group
   is the one that is compared. The repetition is reported in
-  `diff.duplicate_cells` instead of being swallowed.
+  `diff.duplicate_cells` instead of being swallowed. The scan covers the
+  whole document, even when `cells=` or `cell=` narrows the comparison to
+  other cells, so a targeted comparison can still report a duplicated cell
+  name.
 
 Those three classes — `UnitMismatch`, `AxisRoleMismatch` and
 `MalformedTable` — live in `liberty_tools.comparison` and are re-exported

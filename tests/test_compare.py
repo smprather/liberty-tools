@@ -1087,6 +1087,10 @@ def test_duplicate_cell_names_are_reported_for_either_document(tmp_path: Path):
 
     assert diff.duplicate_cells == ["u1"]
 
+    # The union is pinned on both sides: the name is reported whichever
+    # document holds the repeated group.
+    assert lt.compare(duplicate, unique).duplicate_cells == ["u1"]
+
 
 def test_documents_with_unique_cell_names_report_no_duplicate_cells(
     tmp_path: Path,
