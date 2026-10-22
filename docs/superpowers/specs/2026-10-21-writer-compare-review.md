@@ -87,7 +87,8 @@ half-importable.
 `liberty_tools/__init__.pyi:435-508`.
 
 Type checkers see two distinct nominal `Comparison` types and two `compare`
-signatures; `lt.Comparison(entries=[])` (valid at runtime) is rejected by `ty`.
+signatures: the stub declared the compare types a second time instead of
+re-exporting them.
 
 ### I3. `compare()` ignores library units
 
