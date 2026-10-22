@@ -3,7 +3,7 @@
 This project uses two related version identifiers:
 
 - Cargo/package version: SemVer in `Cargo.toml`.
-- GitHub release tag: date-based release ID in `vYYYY.MM.DD.N` format.
+- GitHub release tag: month-based release ID in `vYYYY.M.N[-suffix]` format.
 
 ## Cargo Version
 
@@ -33,23 +33,29 @@ changes.
 
 ## Release Tags
 
-GitHub releases use date-based tags:
+GitHub releases use month-based tags:
 
 ```text
-vYYYY.MM.DD.N
+vYYYY.M.N[-suffix]
 ```
 
 Example:
 
 ```text
-v2026.06.01.1
+v2026.10.1
 ```
 
-`N` starts at `1` for the first release on a given date and increments for
-additional releases on the same date.
+`N` starts at `1` for the first release of a month and increments for each
+additional release in the same month.
+
+The optional `[-suffix]` marks a tag that is not a release — for example
+`v2026.10.1-dev` for a development snapshot. Release tags carry no suffix.
 
 Release tags should point at commits where `Cargo.toml` contains a stable
 SemVer version, not a `-dev` version.
+
+Tags released before this scheme (for example `v2026.06.01.1`) use the older
+date-based `vYYYY.MM.DD.N` form and are left as they are.
 
 ## CLI Version Output
 
