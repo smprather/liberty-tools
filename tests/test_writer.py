@@ -555,6 +555,11 @@ def test_duplicate_pin_names_in_different_buses_patch_the_addressed_one(tmp_path
     doc = lt.parse_file(path)
     doc.cell("u1").bus("B").pin("P").set_attribute("capacitance", "9.0")
 
+    # The live model follows the edit: the addressed pin holds the new value
+    # and the same-named pin of the other bus keeps its own.
+    assert doc.cell("u1").bus("A").pin("P").get("capacitance") == "0.001"
+    assert doc.cell("u1").bus("B").pin("P").get("capacitance") == "9.0"
+
     written = doc.to_string()
     assert "        capacitance : 0.001;" in written
     assert "        capacitance : 9.0;" in written
