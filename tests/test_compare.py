@@ -1055,6 +1055,52 @@ def test_a_library_with_two_cell_groups_of_the_same_name_is_still_compared(
     assert all(entry.matched for entry in diff.entries)
 
 
+def test_duplicate_cell_names_are_reported(tmp_path: Path):
+    path = _write(tmp_path, "duplicate_cell.lib", DUPLICATE_CELL_LIBRARY)
+    document = lt.parse_file(path)
+
+    diff = lt.compare(document, document)
+
+    # The document holds two groups named `u1`: the comparison uses the
+    # first one, and the repetition is reported instead of being swallowed.
+    assert diff.duplicate_cells == ["u1"]
+    assert diff.summary()["duplicate_cells"] == 1
+    assert diff.has_differences is True
+    # The behaviour does not change: the first group is the one compared.
+    assert len(diff.entries) == 4
+    assert all(entry.matched for entry in diff.entries)
+    assert sorted(entry.value_a for entry in diff.entries) == [
+        10.0,
+        20.0,
+        30.0,
+        40.0,
+    ]
+
+
+def test_duplicate_cell_names_are_reported_for_either_document(tmp_path: Path):
+    unique = lt.parse_file(_write(tmp_path, "ours.lib", OURS))
+    duplicate = lt.parse_file(
+        _write(tmp_path, "duplicate_cell.lib", DUPLICATE_CELL_LIBRARY)
+    )
+
+    diff = lt.compare(unique, duplicate)
+
+    assert diff.duplicate_cells == ["u1"]
+
+
+def test_documents_with_unique_cell_names_report_no_duplicate_cells(
+    tmp_path: Path,
+):
+    path = _write(tmp_path, "ours.lib", OURS)
+    document = lt.parse_file(path)
+
+    diff = lt.compare(document, document)
+
+    assert diff.duplicate_cells == []
+    assert diff.summary()["duplicate_cells"] == 0
+    assert diff.has_differences is False
+
+
 def test_a_table_with_too_few_values_is_reported_as_malformed(tmp_path: Path):
     ours = lt.parse_file(_write(tmp_path, "ours.lib", OURS))
     theirs = lt.parse_file(_write(tmp_path, "theirs.lib", SHORT_VALUES_LIBRARY))

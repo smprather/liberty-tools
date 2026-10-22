@@ -299,6 +299,11 @@ class Comparison:
     #: Arcs whose identity is not unique: two arcs of the same document
     #: cannot be told apart. Their values are not compared.
     duplicate_arcs: list[ArcKey] = field(default_factory=list)
+    #: Cell names that occur more than once in one of the two documents:
+    #: the document holds several cell groups with that name. The first
+    #: group is the one that is compared, and the repetition is reported
+    #: here instead of being swallowed.
+    duplicate_cells: list[str] = field(default_factory=list)
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -338,7 +343,8 @@ class Comparison:
         documents, arcs or tables that exist in only one document, tables
         whose grids have a different shape, tables that were not compared
         because of a unit or an axis role mismatch, tables whose values do
-        not fill their grid, and arcs whose identity is not unique.
+        not fill their grid, arcs whose identity is not unique, and cell
+        names that occur more than once in one of the documents.
 
         A point that has no value in either document is not a difference:
         both documents agree that there is no data there.
@@ -355,6 +361,7 @@ class Comparison:
             or self.axis_role_mismatches
             or self.malformed_tables
             or self.duplicate_arcs
+            or self.duplicate_cells
         )
 
     def max_abs_delta(self) -> float | None:
@@ -383,6 +390,7 @@ class Comparison:
             "axis_role_mismatches": len(self.axis_role_mismatches),
             "malformed_tables": len(self.malformed_tables),
             "duplicate_arcs": len(self.duplicate_arcs),
+            "duplicate_cells": len(self.duplicate_cells),
             "max_abs_delta": self.max_abs_delta(),
             "has_differences": self.has_differences,
         }
@@ -470,6 +478,11 @@ def compare(
     compared: picking one of them would compare values that do not
     correspond.
 
+    A document that holds several cell groups with the same name is
+    malformed: only the first group of a name can be addressed, so that
+    group is the one that is compared. The repetition is reported in
+    :attr:`Comparison.duplicate_cells` instead of being swallowed.
+
     The tables of matched arcs are matched by name, and their grids are aligned
     by *axis role* rather than by position: the load axis of one library is
     matched against the load axis of the other even when the two files store
@@ -533,6 +546,12 @@ def compare(
     # deduplicated (the first occurrence wins) before the arcs are read.
     names = list(dict.fromkeys(names))
 
+    # A document that holds several cell groups with the same name is
+    # malformed: only the first group of a name can be addressed, so the
+    # repetition is reported. It is a property of the document, so it is
+    # looked for in the whole document and not only in the compared cells.
+    duplicate_cells = _duplicate_cell_names(a, b)
+
     arcs_a, duplicates_a = _collect_arcs(a, names, pin)
     arcs_b, duplicates_b = _collect_arcs(b, names, pin)
 
@@ -543,7 +562,7 @@ def compare(
         arcs_a.pop(key, None)
         arcs_b.pop(key, None)
 
-    result = Comparison(duplicate_arcs=duplicates)
+    result = Comparison(duplicate_arcs=duplicates, duplicate_cells=duplicate_cells)
     units = _unit_context(a, b)
     matched_pairs, only_in_a, only_in_b = _match_arcs(arcs_a, arcs_b)
     result.only_in_a = only_in_a
@@ -737,6 +756,27 @@ def _affected_dimensions(
             if dimension is not None:
                 dimensions.add(dimension)
     return dimensions
+
+
+def _duplicate_cell_names(*documents: LibertyDocument) -> list[str]:
+    """The cell names that occur more than once in the given documents.
+
+    A document lists a cell name once per cell group, so a name that occurs
+    more than once means the document holds several groups with that name.
+    Such a document is malformed: only the first group of a name can be
+    addressed, so the repetition is reported rather than swallowed.
+
+    The names of all the documents are counted per document, so a name that
+    is repeated in one of them is reported once — and a document that is
+    compared with itself is not a document that repeats its cell names.
+    """
+    duplicates: set[str] = set()
+    for document in documents:
+        counts: dict[str, int] = {}
+        for name in document.cells():
+            counts[name] = counts.get(name, 0) + 1
+        duplicates.update(name for name, count in counts.items() if count > 1)
+    return sorted(duplicates)
 
 
 def _collect_arcs(

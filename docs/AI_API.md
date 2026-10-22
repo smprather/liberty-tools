@@ -36,6 +36,7 @@ diff.unit_mismatches -> list[UnitMismatch]
 diff.axis_role_mismatches -> list[AxisRoleMismatch]
 diff.malformed_tables -> list[MalformedTable]
 diff.duplicate_arcs -> list[ArcKey]
+diff.duplicate_cells -> list[str]
 diff.matched -> list[CompareEntry]
 diff.mismatched -> list[CompareEntry]
 diff.unmatched -> list[CompareEntry]
@@ -518,6 +519,7 @@ diff.unit_mismatches       # tables whose unit dimension differs between the lib
 diff.axis_role_mismatches  # tables whose axis roles are known on both sides but differ
 diff.malformed_tables      # tables whose values do not fill their grid
 diff.duplicate_arcs        # arcs whose identity is not unique
+diff.duplicate_cells       # cell names that occur more than once in a document
 diff.unmatched             # points with a value on only one side
 diff.has_differences       # True when the two libraries differ in any way
 ```
@@ -547,6 +549,10 @@ reported, never diffed.
 - Two arcs of the same document that share their whole identity cannot be
   told apart; they are reported in `diff.duplicate_arcs` and neither is
   compared.
+- A document that holds **several cell groups with the same name** is
+  malformed: only the first group of a name can be addressed, so that group
+  is the one that is compared. The repetition is reported in
+  `diff.duplicate_cells` instead of being swallowed.
 
 How the matching works:
 
@@ -578,7 +584,8 @@ The specific reason a table was not compared is reported next to it:
 `diff.has_differences` is `True` when *any* kind of difference was found —
 differing values, points with a value in only one of the two documents,
 arcs or tables in only one document, a shape mismatch, a unit or axis-role
-mismatch, a malformed table or a duplicate arc. `diff.summary()` counts
+mismatch, a malformed table, a duplicate arc or a cell name that occurs more
+than once in one of the documents. `diff.summary()` counts
 every one of those kinds, so a consumer gating on
 `summary()["has_differences"]` cannot read a missing or incomparable table as
 "the libraries are the same".

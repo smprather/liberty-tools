@@ -377,6 +377,7 @@ diff.unit_mismatches       # tables whose unit dimension differs between the lib
 diff.axis_role_mismatches  # tables whose axis roles are known on both sides but differ
 diff.malformed_tables      # tables whose values do not fill their grid
 diff.duplicate_arcs        # arcs whose identity is not unique
+diff.duplicate_cells       # cell names that occur more than once in a document
 diff.unmatched             # points with a value on only one side
 diff.has_differences       # True when the two libraries differ in any way
 ```
@@ -392,6 +393,10 @@ diff.has_differences       # True when the two libraries differ in any way
 - A table whose **`values` length does not match its grid** is reported as a
   `MalformedTable`, not interpolated: its values cannot be lined up with the
   points they belong to.
+- A document that holds **several cell groups with the same name** is
+  malformed: only the first group of a name can be addressed, so that group
+  is the one that is compared. The repetition is reported in
+  `diff.duplicate_cells` instead of being swallowed.
 
 Those three classes — `UnitMismatch`, `AxisRoleMismatch` and
 `MalformedTable` — live in `liberty_tools.comparison` and are re-exported
@@ -474,6 +479,7 @@ diff.unit_mismatches
 diff.axis_role_mismatches
 diff.malformed_tables
 diff.duplicate_arcs
+diff.duplicate_cells
 diff.matched
 diff.mismatched
 diff.unmatched
