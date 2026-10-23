@@ -35,13 +35,25 @@ The package also ships `py.typed` and `.pyi` stubs for coding tools.
 
 ## Project Status
 
-This is an early implementation. The parser is already useful for large timing
-libraries, but the public API should still be treated as pre-1.0.
+The parser is already useful for large timing libraries. Releases follow
+SemVer (see [VERSIONING_PLAN.md](VERSIONING_PLAN.md)): backward-compatible
+additions land in a minor release, and an incompatible API, output or CLI
+change gets a major bump.
 
 On the local 96.8 MB reference Liberty file, the release extension parses the
 whole library into an in-memory document in about 1.5 seconds (~150 MB peak
 RSS). The lazy `LibraryIndex` used by the viewer opens the same file in about
 0.15 seconds and parses individual cells on demand.
+
+## Repository Layout
+
+The Liberty tool is the package at the repository root (`liberty_tools`, with
+its Rust backend in `src/` and its tests in `tests/`). Each additional tool
+gets its own package directory and its own distribution, with its own tests
+and command-line entry points; [docs/TOOLS.md](docs/TOOLS.md) lists the tools
+and the steps for adding one. Shared build, test and release conventions are in
+[BUILD.md](BUILD.md), [VERSIONING_PLAN.md](VERSIONING_PLAN.md) and
+[CLAUDE.md](CLAUDE.md).
 
 ## Install From GitHub
 

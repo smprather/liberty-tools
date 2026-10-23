@@ -6,6 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 (`liberty_tools`, distribution `liberty-tools`, with the `liberty-view` and
 `liberty-format` commands) is the current one.
 
+## Repository Layout
+
+The Liberty tool is the package at the repository root (`liberty_tools`, Rust
+backend in `src/`, tests in `tests/`). Future tools (VCD, DEF, …) each get
+their own package directory, distribution, tests and command-line entry
+points — see `docs/TOOLS.md`. Do not add another format's code to
+`liberty_tools`.
+
 ## Commands
 
 ```bash
