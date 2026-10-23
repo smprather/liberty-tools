@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+`open-eda-file-tools` hosts EDA data-file tooling; the Liberty package
+(`liberty_tools`, distribution `liberty-tools`, with the `liberty-view` and
+`liberty-format` commands) is the current one.
+
 ## Commands
 
 ```bash

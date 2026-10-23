@@ -4,7 +4,7 @@ Boolean logic function → gate-symbol **SVG**. Type a function, get a schematic
 AND/OR/XOR gates with inversion bubbles, live. Zero dependencies, zero build —
 plain ES modules + SVG.
 
-> First pass, living in the `liberty-tools` repo for now; will move to its own
+> First pass, living in the `open-eda-file-tools` repo for now; will move to its own
 > repo (and likely gain TS + Vite + GitHub Pages) later.
 
 ## Run

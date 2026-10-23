@@ -1,11 +1,15 @@
-# liberty-tools
+# open-eda-file-tools
 
-`liberty-tools` is a fast Python library for parsing and querying Synopsys
-Liberty `.lib` timing models. It streams Liberty files through a Rust backend
-and exposes a Python API for cells, pins, timing arcs, timing tables, and Polars
-dataframe extraction.
+`open-eda-file-tools` is a home for open EDA data-file tooling. Its first
+package is `liberty-tools`, a fast Python library for parsing and querying
+Synopsys Liberty `.lib` timing models: it streams Liberty files through a Rust
+backend and exposes a Python API for cells, pins, timing arcs, timing tables,
+and Polars dataframe extraction.
 
-The current implementation focuses on standard-cell timing, power, and CCS data:
+More EDA data-file tools (a VCD toggle-count profiler, a DEF reader, and
+others) will join it in this repository.
+
+The Liberty implementation focuses on standard-cell timing, power, and CCS data:
 
 - streaming parse from `.lib` and `.lib.gz` paths
 - low-memory Rust-backed indexing with on-demand cell parsing (`LibraryIndex`)
@@ -44,13 +48,13 @@ RSS). The lazy `LibraryIndex` used by the viewer opens the same file in about
 Until wheels are published, install directly from the repository:
 
 ```bash
-python -m pip install "git+https://github.com/smprather/liberty-tools.git"
+python -m pip install "git+https://github.com/smprather/open-eda-file-tools.git"
 ```
 
 For projects managed by `uv`:
 
 ```bash
-uv add "liberty-tools @ git+https://github.com/smprather/liberty-tools.git"
+uv add "liberty-tools @ git+https://github.com/smprather/open-eda-file-tools.git"
 ```
 
 This package contains a Rust extension, so source installs need:
@@ -64,8 +68,8 @@ This package contains a Rust extension, so source installs need:
 Clone and build the editable extension:
 
 ```bash
-git clone https://github.com/smprather/liberty-tools.git
-cd liberty-tools
+git clone https://github.com/smprather/open-eda-file-tools.git
+cd open-eda-file-tools
 uv sync --dev
 uv run maturin develop --release
 ```

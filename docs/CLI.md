@@ -10,7 +10,7 @@
 Both are installed with the package:
 
 ```bash
-uv tool install "liberty-tools @ git+https://github.com/smprather/liberty-tools.git"
+uv tool install "liberty-tools @ git+https://github.com/smprather/open-eda-file-tools.git"
 ```
 
 The `liberty-tools` name on PyPI belongs to an unrelated project, and no
