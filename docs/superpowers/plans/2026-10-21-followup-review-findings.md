@@ -31,7 +31,7 @@ disproved during execution and is corrected here.
 - The Python wrapper stays thin; the `.pyi` stub must match the runtime exactly.
 - TDD: write the failing test first, watch it fail for the expected reason,
   then implement. Record the RED and GREEN output in the task report.
-- Commands, from the repo root `/home/mylesp/liberty-tools`:
+- Commands, from the repo root `/home/mylesp/open-eda-file-tools`:
   `uv run pytest -q`, `uv run ruff check .`, `uv run ty check` (11 pre-existing
   diagnostics are expected; the count must not grow). No Rust change is
   expected, so no `maturin` rebuild.

@@ -51,7 +51,7 @@ These bind every task. Copy them verbatim into any review dispatch.
 - **No new public API without a test, a `.pyi` entry and a doc mention.**
 - **TDD:** write the failing test first, watch it fail for the expected reason,
   then implement. Record the RED and GREEN output in the task report.
-- **Build/test commands** (run from the repo root `/home/mylesp/liberty-tools`):
+- **Build/test commands** (run from the repo root `/home/mylesp/open-eda-file-tools`):
   - Rust change → `uv run maturin develop --release` (mandatory: Python tests
     import the built extension) → `cargo fmt --check` → `cargo check`
   - Python change → `uv run pytest -q` (full suite before committing)
@@ -83,7 +83,7 @@ task named beside it:
 
 ## Context for every task
 
-**Repo:** `/home/mylesp/liberty-tools`, branch `fix/review-fixes-2026-10-21`
+**Repo:** `/home/mylesp/open-eda-file-tools`, branch `fix/review-fixes-2026-10-21`
 (created from `main` at `4630a3b`). Work in that checkout; do not create a
 worktree.
 
